@@ -63,21 +63,25 @@ def chat(req: ChatRequest):
 
             llm = LLMProvider.get(req.provider)
 
-            # Handle OpenAI-compatible clients
-            if hasattr(llm, "chat"):
-                # LocalPyTorchLLM.chat interface
-                text = llm.chat([{"role": "user", "content": req.message}], max_tokens=256)
-                return {"response": text}
-
-            # OpenAI Python SDK
-            if hasattr(llm, "chat") and hasattr(llm.chat, "completions"):
-                model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            # OpenAI-style client first (llm.chat.completions.create)
+            if hasattr(llm, "chat") and hasattr(llm.chat, "completions") and callable(getattr(llm.chat.completions, "create", None)):
+                # Choose sensible default model based on requested provider, not base URL
+                p = (req.provider or "openai").strip().lower()
+                if p == "deepseek":
+                    default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+                else:
+                    default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 comp = llm.chat.completions.create(
-                    model=model,
+                    model=default_model,
                     messages=[{"role": "user", "content": req.message}],
                     temperature=0.7,
                 )
-                text = comp.choices[0].message.content if comp and comp.choices else ""
+                text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+                return {"response": text}
+
+            # LocalPyTorchLLM or any object exposing a callable .chat(messages, ...)
+            if callable(getattr(llm, "chat", None)):
+                text = llm.chat([{"role": "user", "content": req.message}], max_tokens=256)
                 return {"response": text}
 
             return {"response": "Direct chat not supported for this provider."}
