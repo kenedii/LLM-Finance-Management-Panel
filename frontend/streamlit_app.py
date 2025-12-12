@@ -1,6 +1,6 @@
 # streamlit_app.py
 import streamlit as st
-from utils import chat_with_llm, get_portfolio, add_to_portfolio, delete_from_portfolio, create_chat, list_chats, rename_chat, append_message
+from utils import chat_with_llm, get_portfolio, add_to_portfolio, delete_from_portfolio, create_chat, list_chats, rename_chat, append_message, delete_chat
 import pandas as pd
 import yfinance as yf
 
@@ -53,17 +53,49 @@ if page == "Chat":
                 current_session = s
                 break
 
-    # Render transcript for the selected chat
-    st.subheader("Conversation")
+    # Controls for selected chat
+    if sessions and session_id:
+        cols = st.columns([0.7, 0.3])
+        with cols[0]:
+            st.subheader("Conversation")
+        with cols[1]:
+            if st.button("Delete Chat", type="secondary"):
+                delete_chat(session_id)
+                new = create_chat()
+                st.session_state["session_id"] = new.get("id")
+                st.rerun()
+
+    # Styles for chat bubbles and scrollable area
+    st.markdown(
+        """
+        <style>
+        .chat-container { max-height: 480px; overflow-y: auto; padding: 8px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
+        .msg { margin: 8px 0; display: flex; }
+        .bubble { padding: 10px 12px; border-radius: 14px; max-width: 80%; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+        .user { justify-content: flex-end; }
+        .user .bubble { background: #DCF8C6; }
+        .assistant { justify-content: flex-start; }
+        .assistant .bubble { background: #ffffff; }
+        .meta { font-size: 11px; color: #888; margin-top: 4px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
     if current_session and current_session.get("messages"):
         for m in current_session["messages"]:
             role = (m.get("role") or "user").lower()
             content = m.get("content") or ""
             ts = m.get("ts") or ""
-            prefix = "👤" if role == "user" else "🤖"
-            st.markdown(f"{prefix} **{role.capitalize()}**  \\n+{content}")
+            icon = "👤" if role == "user" else "🤖"
+            st.markdown(
+                f'<div class="msg {role}"><div class="bubble">{icon} {content}<div class="meta">{ts}</div></div></div>',
+                unsafe_allow_html=True,
+            )
     else:
         st.info("No messages yet. Start the conversation below.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     message = st.text_area("Your message")
     symbol = st.text_input("Optional: Stock symbol for focused analysis")

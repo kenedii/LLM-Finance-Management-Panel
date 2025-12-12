@@ -234,6 +234,15 @@ def append_message(chat_id: str, req: AppendMessageRequest):
     return {"status": "appended"}
 
 
+@app.post("/chats/{chat_id}/delete")
+def delete_chat(chat_id: str):
+    chats = load_chats()
+    sessions = chats.get("sessions", [])
+    chats["sessions"] = [s for s in sessions if s.get("id") != chat_id]
+    save_chats(chats)
+    return {"status": "deleted"}
+
+
 @app.get("/portfolio")
 def get_portfolio():
     return load_portfolio()

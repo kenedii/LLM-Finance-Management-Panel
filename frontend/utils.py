@@ -32,6 +32,10 @@ def rename_chat(chat_id, title):
 def append_message(chat_id, role, content):
     requests.post(f"{API_URL}/chats/{chat_id}/message", json={"role": role, "content": content})
 
+
+def delete_chat(chat_id):
+    requests.post(f"{API_URL}/chats/{chat_id}/delete")
+
 def get_portfolio():
     return requests.get(f"{API_URL}/portfolio").json()
 
