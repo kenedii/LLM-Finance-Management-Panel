@@ -30,8 +30,8 @@ accelerate
 # -----------------------------
 # CrewAI Agents
 # -----------------------------
-crewai
-crewai[tools]
+crewai<0.54
+crewai[tools]<0.54
 
 # -----------------------------
 # Data + Finance

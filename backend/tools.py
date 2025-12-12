@@ -1,7 +1,7 @@
 # tools.py
 import pandas as pd
 import yfinance as yf
-from price_scraper import downloadStockPrice
+from .price_scraper import downloadStockPrice
 import os
 
 def get_current_price(symbol: str):

@@ -32,22 +32,36 @@ elif page == "Portfolio":
     df = pd.DataFrame(pf).T
 
     if not df.empty:
-        df["current_price"] = df.index.map(lambda s: yf.Ticker(s).info.get("regularMarketPrice"))
-        df["profit"] = (df["current_price"] - df["avg_buy"]) * df["quantity"]
+        # Ensure columns exist
+        for col in ["symbol", "avg_buy", "avg_sell", "quantity", "realized_profit"]:
+            if col not in df.columns:
+                df[col] = 0.0 if col != "symbol" else df.index
 
-        st.metric("Total Profit", f"${df['profit'].sum():.2f}")
+        # Realized profit only
+        total_realized = float(df.get("realized_profit", pd.Series(dtype=float)).fillna(0.0).sum())
+        st.metric("Total Realized Profit", f"${total_realized:,.2f}")
 
-        st.dataframe(df)
+        # Optional: show unrealized P/L separately for info (not part of total realized)
+        # current_price = df.index.map(lambda s: yf.Ticker(s).info.get("regularMarketPrice"))
+        # df["unrealized_pl"] = (current_price - df["avg_buy"]) * df["quantity"]
+
+        st.dataframe(
+            df[["symbol", "quantity", "avg_buy", "avg_sell", "realized_profit"]]
+              .fillna(0.0)
+              .rename(columns={"avg_sell": "last_sell"})
+        )
 
     st.subheader("Add Asset")
 
     symbol = st.text_input("Symbol")
-    avg_buy = st.number_input("Avg Buy", value=0.0)
-    avg_sell = st.number_input("Avg Sell (Optional)", value=0.0)
+    avg_buy = st.number_input("Avg Buy", value=0.0, min_value=0.0)
+    avg_sell = st.number_input("Avg Sell (Optional)", value=0.0, min_value=0.0)
     qty = st.number_input("Quantity", value=0.0)
 
     if st.button("Add to Portfolio"):
-        add_to_portfolio(symbol, avg_buy, avg_sell, qty)
+        # Treat 0.0 as None for avg_sell so backend sees it as a BUY unless explicitly set
+        payload_avg_sell = None if avg_sell == 0.0 else avg_sell
+        add_to_portfolio(symbol, avg_buy, payload_avg_sell, qty)
         st.success(f"Added {symbol}")
         st.rerun()
 
