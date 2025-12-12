@@ -26,9 +26,15 @@ if page == "Chat":
     # Sidebar: list chats ordered by updated_at desc
     st.sidebar.subheader("Chat History")
     if st.sidebar.button("New Chat"):
-        new = create_chat()
-        st.session_state["session_id"] = new.get("id")
+        # Do not persist a chat until the first message is sent; just clear selection
+        st.session_state["session_id"] = None
         st.session_state["reset_chat"] = False
+        st.rerun()
+    if st.sidebar.button("Delete Chat"):
+        if st.session_state.get("session_id"):
+            delete_chat(st.session_state["session_id"])
+        # Do not auto-create a new chat; leave empty until first message is sent
+        st.session_state["session_id"] = None
         st.rerun()
     sessions = list_chats()
     titles = [f"{s.get('title','')}" for s in sessions]
@@ -54,16 +60,7 @@ if page == "Chat":
                 break
 
     # Controls for selected chat
-    if sessions and session_id:
-        cols = st.columns([0.7, 0.3])
-        with cols[0]:
-            st.subheader("Conversation")
-        with cols[1]:
-            if st.button("Delete Chat", type="secondary"):
-                delete_chat(session_id)
-                new = create_chat()
-                st.session_state["session_id"] = new.get("id")
-                st.rerun()
+    st.subheader("Conversation")
 
     # Styles for chat bubbles and scrollable area
     st.markdown(
@@ -71,12 +68,12 @@ if page == "Chat":
         <style>
         .chat-container { max-height: 480px; overflow-y: auto; padding: 8px; border: 1px solid #ddd; border-radius: 8px; background: #fafafa; }
         .msg { margin: 8px 0; display: flex; }
-        .bubble { padding: 10px 12px; border-radius: 14px; max-width: 80%; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+        .bubble { padding: 10px 12px; border-radius: 14px; max-width: 80%; box-shadow: 0 1px 2px rgba(0,0,0,0.08); color: #000; }
         .user { justify-content: flex-end; }
         .user .bubble { background: #DCF8C6; }
         .assistant { justify-content: flex-start; }
         .assistant .bubble { background: #ffffff; }
-        .meta { font-size: 11px; color: #888; margin-top: 4px; }
+        .meta { font-size: 11px; color: #000; margin-top: 4px; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -121,9 +118,14 @@ if page == "Chat":
                     summary = "\n".join(lines)
                     msg = f"{message}\n\n[Portfolio Summary]\n{summary}"
 
-        # Persist the user's message regardless
-        if session_id:
-            append_message(session_id, "user", msg)
+        # Create session only when the first message is sent
+        if not session_id:
+            new = create_chat()
+            st.session_state["session_id"] = new.get("id")
+            session_id = st.session_state["session_id"]
+        
+        # Persist the user's original message (without portfolio context block)
+        append_message(session_id, "user", message)
 
         # Pass use_crew flag and history settings via utils
         response = chat_with_llm(provider, msg, symbol, use_crew=use_crew, use_history=use_history, session_id=session_id)
@@ -131,10 +133,9 @@ if page == "Chat":
         st.write(response)
 
         # Save assistant message to history
-        if session_id:
-            append_message(session_id, "assistant", response)
-            # Refresh sidebar ordering (most-recent first)
-            st.rerun()
+        append_message(session_id, "assistant", response)
+        # Refresh sidebar ordering (most-recent first)
+        st.rerun()
 
 
 # --- PORTFOLIO PAGE ---

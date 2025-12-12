@@ -19,5 +19,12 @@
         "avg_sell": 150.0,
         "quantity": 0.0,
         "realized_profit": 90.0
+    },
+    "GME": {
+        "symbol": "GME",
+        "avg_buy": 50.0,
+        "avg_sell": null,
+        "quantity": 5.0,
+        "realized_profit": 0.0
     }
 }
