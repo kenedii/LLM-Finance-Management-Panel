@@ -1,113 +1,146 @@
 # llm_provider.py
 """
 LLM provider factory.
-Supports: openai, deepseek (native or OpenAI-compatible), grok (xAI), gemini (google),
-anthropic, and a local llama-cpp client.
+Supports: openai, deepseek (OpenAI-compatible), grok (xAI), gemini (google),
+anthropic, and local PyTorch transformer models.
 """
 
 import os
-from typing import Any
+from typing import Any, Dict, List
 
-# Optional: import SDKs if installed. Wrap in try/except to avoid import-time failure.
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# -------------------------------------------------------------
+# Optional imports: safely wrapped
+# -------------------------------------------------------------
 try:
-    import openai  # openai sdk can be used to call OpenAI-compatible endpoints (and DeepSeek if base set)
-except Exception:
-    openai = None
+    from openai import OpenAI
+except:
+    OpenAI = None
 
 try:
-    # xAI SDK (Grok)
-    # Official project appears as `xai_sdk` in docs / github; some community wrappers exist too.
     from xai_sdk import Client as XAIClient
-except Exception:
+except:
     XAIClient = None
 
-# DeepSeek: some projects publish deepseek or deepseek-sdk
-try:
-    import deepseek  # optional native DeepSeek SDK
-except Exception:
-    deepseek = None
-
-# Anthropic (optional)
 try:
     from anthropic import Anthropic
-except Exception:
+except:
     Anthropic = None
 
-# Google generative (optional)
 try:
     from google.generativeai import Client as GoogleAIClient
-except Exception:
+except:
     GoogleAIClient = None
 
-# Local LLM via llama-cpp-python
-try:
-    from llama_cpp import Llama
-except Exception:
-    Llama = None
+
+# -------------------------------------------------------------
+#  LOCAL PYTORCH MODEL WRAPPER
+# -------------------------------------------------------------
+class LocalPyTorchLLM:
+    def __init__(self, model_path: str):
+        if not os.path.isdir(model_path) and not os.path.isfile(model_path):
+            raise RuntimeError(f"Local model path not found: {model_path}")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+
+    def chat(self, messages: List[Dict[str, str]], max_tokens=256) -> str:
+        """
+        messages = [{ "role": "user", "content": "..." }]
+        Only the last message content is used for prompting.
+        """
+        prompt = messages[-1]["content"]
+
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
+        output_ids = self.model.generate(
+            inputs.input_ids,
+            max_new_tokens=max_tokens,
+            do_sample=True,
+            temperature=0.7
+        )
+
+        return self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
 
+# -------------------------------------------------------------
+# PROVIDER FACTORY
+# -------------------------------------------------------------
 class LLMProvider:
     @staticmethod
     def get(provider: str) -> Any:
         p = (provider or "openai").strip().lower()
 
+        # ---------------------------------------------------------
+        # OPENAI (including DeepSeek-compatible mode if api_base set)
+        # ---------------------------------------------------------
         if p == "openai":
-            if openai is None:
+            if OpenAI is None:
                 raise RuntimeError("openai package not installed. pip install openai")
+
             api_key = os.getenv("OPENAI_API_KEY")
             base = os.getenv("OPENAI_API_BASE") or None
-            # Example minimal wrapper returning a function to call chat completions
-            def openai_client():
-                openai.api_key = api_key
-                if base:
-                    openai.api_base = base
-                return openai
-            return openai_client()
 
+            return OpenAI(api_key=api_key, base_url=base)
+
+        # ---------------------------------------------------------
+        # DEEPSEEK (OpenAI-compatible endpoint only)
+        # ---------------------------------------------------------
         if p == "deepseek":
-            # Prefer native DeepSeek SDK if installed, otherwise use OpenAI-compatible endpoint
+            if OpenAI is None:
+                raise RuntimeError("openai package required to call DeepSeek")
+
             ds_key = os.getenv("DEEPSEEK_API_KEY")
-            ds_base = os.getenv("DEEPSEEK_API_BASE") or "https://api.deepseek.com"
-            if deepseek is not None:
-                # Example: deepseek.DeepSeekClient(api_key=...)  <-- adapt to actual SDK interface
-                return deepseek.DeepSeekClient(api_key=ds_key)  # replace with correct init if different
-            else:
-                # fallback to OpenAI-compatible usage via openai SDK
-                if openai is None:
-                    raise RuntimeError("openai package required as fallback for DeepSeek. pip install openai")
-                openai.api_key = ds_key
-                openai.api_base = ds_base
-                return openai
+            ds_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
 
-        if p == "grok" or p == "xai":
-            # xAI Grok by default expects XAI_API_KEY env var. The docs show a Client in xai_sdk.
-            xai_key = os.getenv("XAI_API_KEY") or os.getenv("XAI_API_KEY".upper())
+            return OpenAI(
+                api_key=ds_key,
+                base_url=ds_base
+            )
+
+        # ---------------------------------------------------------
+        # GROK (xAI)
+        # ---------------------------------------------------------
+        if p in ("grok", "xai"):
+            key = os.getenv("XAI_API_KEY")
             if XAIClient is None:
-                raise RuntimeError("xai_sdk not installed. pip install xai-sdk (or xai-grok-sdk)")
-            # Example usage (adapt to exact SDK):
-            client = XAIClient(api_key=xai_key)
-            return client
+                raise RuntimeError("xai_sdk not installed. pip install xai-sdk")
+            return XAIClient(api_key=key)
 
+        # ---------------------------------------------------------
+        # ANTHROPIC (Claude)
+        # ---------------------------------------------------------
         if p in ("anthropic", "claude"):
             key = os.getenv("ANTHROPIC_API_KEY")
             if Anthropic is None:
                 raise RuntimeError("anthropic package not installed. pip install anthropic")
-            client = Anthropic(api_key=key)
-            return client
+            return Anthropic(api_key=key)
 
+        # ---------------------------------------------------------
+        # GEMINI (Google)
+        # ---------------------------------------------------------
         if p in ("gemini", "google"):
             key = os.getenv("GOOGLE_API_KEY")
             if GoogleAIClient is None:
-                raise RuntimeError("google generativeai package not installed. pip install google-generativeai")
-            client = GoogleAIClient(api_key=key)
-            return client
+                raise RuntimeError("google-generativeai not installed. pip install google-generativeai")
+            return GoogleAIClient(api_key=key)
 
-        if p in ("local", "llama"):
+        # ---------------------------------------------------------
+        # LOCAL PYTORCH TRANSFORMERS MODEL
+        # ---------------------------------------------------------
+        if p in ("local", "pytorch", "hf", "transformers"):
             model_path = os.getenv("LOCAL_MODEL_PATH")
-            if Llama is None:
-                raise RuntimeError("llama-cpp-python not installed. pip install llama-cpp-python")
             if not model_path:
-                raise RuntimeError("LOCAL_MODEL_PATH not set in environment")
-            return Llama(model_path=model_path)
+                raise RuntimeError("LOCAL_MODEL_PATH not set in .env")
+            return LocalPyTorchLLM(model_path)
 
+        # ---------------------------------------------------------
+        # Unknown provider
+        # ---------------------------------------------------------
         raise ValueError(f"Unsupported provider: {provider}")

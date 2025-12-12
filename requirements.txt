@@ -22,8 +22,10 @@ anthropic
 # Google Gemini
 google-generativeai
 
-# Local LLM (GGUF models)
-llama-cpp-python
+# Local LLM (with PyTorch)
+torch
+transformers
+accelerate
 
 # -----------------------------
 # CrewAI Agents
