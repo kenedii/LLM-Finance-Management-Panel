@@ -25,6 +25,11 @@ if page == "Chat":
 
     # Sidebar: list chats ordered by updated_at desc
     st.sidebar.subheader("Chat History")
+    if st.sidebar.button("New Chat"):
+        new = create_chat()
+        st.session_state["session_id"] = new.get("id")
+        st.session_state["reset_chat"] = False
+        st.rerun()
     sessions = list_chats()
     titles = [f"{s.get('title','')}" for s in sessions]
     ids = [s.get("id") for s in sessions]
@@ -38,6 +43,27 @@ if page == "Chat":
         new_title = st.sidebar.text_input("Rename chat", value=sessions[idx].get("title", ""))
         if st.sidebar.button("Save Title"):
             rename_chat(session_id, new_title)
+            st.rerun()
+
+    # Fetch current session details to render transcript
+    current_session = None
+    if sessions and session_id:
+        for s in sessions:
+            if s.get("id") == session_id:
+                current_session = s
+                break
+
+    # Render transcript for the selected chat
+    st.subheader("Conversation")
+    if current_session and current_session.get("messages"):
+        for m in current_session["messages"]:
+            role = (m.get("role") or "user").lower()
+            content = m.get("content") or ""
+            ts = m.get("ts") or ""
+            prefix = "👤" if role == "user" else "🤖"
+            st.markdown(f"{prefix} **{role.capitalize()}**  \\n+{content}")
+    else:
+        st.info("No messages yet. Start the conversation below.")
 
     message = st.text_area("Your message")
     symbol = st.text_input("Optional: Stock symbol for focused analysis")
@@ -75,6 +101,8 @@ if page == "Chat":
         # Save assistant message to history
         if session_id:
             append_message(session_id, "assistant", response)
+            # Refresh sidebar ordering (most-recent first)
+            st.rerun()
 
 
 # --- PORTFOLIO PAGE ---

@@ -196,12 +196,36 @@ class AppendMessageRequest(BaseModel):
 
 def _append_message(chat_id: str, role: str, content: str):
     chats = load_chats()
-    for s in chats.get("sessions", []):
-        if s.get("id") == chat_id:
-            s.setdefault("messages", []).append({"role": role, "content": content, "ts": datetime.now().isoformat()})
-            s["updated_at"] = datetime.now().isoformat()
-            break
+    sessions = chats.setdefault("sessions", [])
+    session = next((s for s in sessions if s.get("id") == chat_id), None)
+    now_iso = datetime.now().isoformat()
+    if not session:
+        # Create session on-the-fly if missing
+        session = {"id": chat_id, "title": datetime.now().strftime("Chat %Y-%m-%d %H:%M"), "created_at": now_iso, "updated_at": now_iso, "messages": []}
+        sessions.append(session)
+
+    session.setdefault("messages", []).append({"role": role, "content": content, "ts": now_iso})
+    session["updated_at"] = now_iso
+
+    # Auto-title on first user message if the title is generic
+    if role.lower() == "user":
+        _auto_title_if_needed(session, content)
     save_chats(chats)
+
+
+def _auto_title_if_needed(session: dict, first_user_content: str):
+    """Set a friendly title based on the first user message if still default."""
+    current_title = session.get("title") or ""
+    # Consider default titles that start with "Chat " as placeholders
+    if not current_title or current_title.startswith("Chat "):
+        preview = (first_user_content or "").strip()
+        if preview:
+            # first ~6 words
+            parts = preview.split()
+            short = " ".join(parts[:6])
+            session["title"] = f"{short} — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        else:
+            session["title"] = datetime.now().strftime("Chat %Y-%m-%d %H:%M")
 
 
 @app.post("/chats/{chat_id}/message")
