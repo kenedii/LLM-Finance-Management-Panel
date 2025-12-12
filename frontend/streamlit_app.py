@@ -1,6 +1,6 @@
 # streamlit_app.py
 import streamlit as st
-from utils import chat_with_llm, get_portfolio, add_to_portfolio, delete_from_portfolio
+from utils import chat_with_llm, get_portfolio, add_to_portfolio, delete_from_portfolio, create_chat, list_chats, rename_chat, append_message
 import pandas as pd
 import yfinance as yf
 
@@ -15,10 +15,35 @@ provider = st.sidebar.selectbox("LLM Provider", ["openai", "deepseek", "grok", "
 if page == "Chat":
     st.title("💬 LLM Stock Advisor")
 
+    # Initialize a fresh chat session on page load
+    if "session_id" not in st.session_state or st.session_state.get("reset_chat", True):
+        new = create_chat()
+        st.session_state["session_id"] = new.get("id")
+        st.session_state["reset_chat"] = False
+
+    session_id = st.session_state.get("session_id")
+
+    # Sidebar: list chats ordered by updated_at desc
+    st.sidebar.subheader("Chat History")
+    sessions = list_chats()
+    titles = [f"{s.get('title','')}" for s in sessions]
+    ids = [s.get("id") for s in sessions]
+    if sessions:
+        idx = st.sidebar.selectbox("Select a chat", options=list(range(len(sessions))), format_func=lambda i: titles[i])
+        selected_id = ids[idx]
+        if selected_id != session_id:
+            st.session_state["session_id"] = selected_id
+            session_id = selected_id
+        # Rename current chat
+        new_title = st.sidebar.text_input("Rename chat", value=sessions[idx].get("title", ""))
+        if st.sidebar.button("Save Title"):
+            rename_chat(session_id, new_title)
+
     message = st.text_area("Your message")
     symbol = st.text_input("Optional: Stock symbol for focused analysis")
     include_portfolio = st.checkbox("Let LLM see your portfolio")
     use_crew = st.checkbox("Use Crew (multi-agent)", value=True)
+    use_history = st.checkbox("Use chat history as context", value=False)
 
     if st.button("Send"):
         msg = message
@@ -38,10 +63,18 @@ if page == "Chat":
                     summary = "\n".join(lines)
                     msg = f"{message}\n\n[Portfolio Summary]\n{summary}"
 
-        # Pass use_crew flag via utils
-        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew)
+        # Persist the user's message regardless
+        if session_id:
+            append_message(session_id, "user", msg)
+
+        # Pass use_crew flag and history settings via utils
+        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew, use_history=use_history, session_id=session_id)
         st.write("### Response:")
         st.write(response)
+
+        # Save assistant message to history
+        if session_id:
+            append_message(session_id, "assistant", response)
 
 
 # --- PORTFOLIO PAGE ---

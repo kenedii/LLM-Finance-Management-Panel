@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 app = FastAPI()
 
@@ -18,6 +19,7 @@ except Exception:
 
 # Store the DB next to this file so it works regardless of CWD
 PORTFOLIO_FILE = Path(__file__).with_name("portfolio_db.json")
+CHAT_DB_FILE = Path(__file__).with_name("chat_db.json")
 
 def load_portfolio():
     try:
@@ -36,11 +38,26 @@ def save_portfolio(data):
         json.dump(data, f, indent=4)
 
 
+def load_chats():
+    try:
+        with CHAT_DB_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"sessions": []}
+
+
+def save_chats(data):
+    with CHAT_DB_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
 class ChatRequest(BaseModel):
     provider: str
     message: str
     symbol: str | None = None
     use_crew: bool = True
+    use_history: bool = False
+    session_id: str | None = None
 
 
 class PortfolioEntry(BaseModel):
@@ -52,6 +69,16 @@ class PortfolioEntry(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
+    # Build context from history if requested
+    history_messages = []
+    if req.use_history and req.session_id:
+        chats = load_chats()
+        session = next((s for s in chats.get("sessions", []) if s.get("id") == req.session_id), None)
+        if session:
+            for m in session.get("messages", []):
+                # Map to generic chat format
+                history_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+
     # Optional: direct LLM mode
     if not req.use_crew:
         try:
@@ -73,15 +100,22 @@ def chat(req: ChatRequest):
                     default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 comp = llm.chat.completions.create(
                     model=default_model,
-                    messages=[{"role": "user", "content": req.message}],
+                    messages=[*history_messages, {"role": "user", "content": req.message}],
                     temperature=0.7,
                 )
                 text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+                # Persist message to history
+                if req.session_id:
+                    _append_message(req.session_id, "user", req.message)
+                    _append_message(req.session_id, "assistant", text)
                 return {"response": text}
 
             # LocalPyTorchLLM or any object exposing a callable .chat(messages, ...)
             if callable(getattr(llm, "chat", None)):
-                text = llm.chat([{"role": "user", "content": req.message}], max_tokens=256)
+                text = llm.chat([*history_messages, {"role": "user", "content": req.message}], max_tokens=256)
+                if req.session_id:
+                    _append_message(req.session_id, "user", req.message)
+                    _append_message(req.session_id, "assistant", text)
                 return {"response": text}
 
             return {"response": "Direct chat not supported for this provider."}
@@ -99,9 +133,81 @@ def chat(req: ChatRequest):
             return {"response": f"Agents unavailable on this platform: {e}"}
 
     crew = build_agents(req.provider)
+    # Crew mode: we only send current user message; agents can be made to use history if desired
     task = {"role": "User", "content": req.message}
     result = crew.run(task)
     return {"response": getattr(result, "raw", str(result))}
+
+
+# -----------------------------
+# Chat sessions management
+# -----------------------------
+class CreateChatRequest(BaseModel):
+    title: str | None = None
+
+
+@app.post("/chats")
+def create_chat(req: CreateChatRequest):
+    chats = load_chats()
+    now = datetime.now()
+    chat_id = f"chat-{int(now.timestamp()*1000)}"
+    title = req.title or now.strftime("Chat %Y-%m-%d %H:%M")
+    session = {
+        "id": chat_id,
+        "title": title,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "messages": [],
+    }
+    chats.setdefault("sessions", []).append(session)
+    save_chats(chats)
+    return {"id": chat_id, "title": title}
+
+
+@app.get("/chats")
+def list_chats():
+    chats = load_chats()
+    sessions = chats.get("sessions", [])
+    # Order by updated_at desc
+    sessions = sorted(sessions, key=lambda s: s.get("updated_at", s.get("created_at", "")), reverse=True)
+    return {"sessions": sessions}
+
+
+class RenameChatRequest(BaseModel):
+    title: str
+
+
+@app.post("/chats/{chat_id}/rename")
+def rename_chat(chat_id: str, req: RenameChatRequest):
+    chats = load_chats()
+    for s in chats.get("sessions", []):
+        if s.get("id") == chat_id:
+            s["title"] = req.title
+            s["updated_at"] = datetime.now().isoformat()
+            break
+    save_chats(chats)
+    return {"status": "renamed"}
+
+
+class AppendMessageRequest(BaseModel):
+    role: str
+    content: str
+
+
+def _append_message(chat_id: str, role: str, content: str):
+    chats = load_chats()
+    for s in chats.get("sessions", []):
+        if s.get("id") == chat_id:
+            s.setdefault("messages", []).append({"role": role, "content": content, "ts": datetime.now().isoformat()})
+            s["updated_at"] = datetime.now().isoformat()
+            break
+    save_chats(chats)
+
+
+@app.post("/chats/{chat_id}/message")
+def append_message(chat_id: str, req: AppendMessageRequest):
+    _append_message(chat_id, req.role, req.content)
+    return {"status": "appended"}
 
 
 @app.get("/portfolio")
