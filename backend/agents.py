@@ -9,8 +9,13 @@ the `signal` module and import `crewai` lazily inside `build_agents`.
 import os
 import signal
 
-from .llm_provider import LLMProvider
-from .tools import get_current_price, get_historical_data
+# Flexible imports: work whether 'backend' is a package or current dir
+try:
+    from backend.llm_provider import LLMProvider  # when running from repo root
+    from backend.tools import get_current_price, get_historical_data
+except Exception:
+    from llm_provider import LLMProvider  # fallback when running inside backend folder
+    from tools import get_current_price, get_historical_data
 
 
 def build_agents(provider: str):

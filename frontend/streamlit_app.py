@@ -17,9 +17,29 @@ if page == "Chat":
 
     message = st.text_area("Your message")
     symbol = st.text_input("Optional: Stock symbol for focused analysis")
+    include_portfolio = st.checkbox("Let LLM see your portfolio")
+    use_crew = st.checkbox("Use Crew (multi-agent)", value=True)
 
     if st.button("Send"):
-        response = chat_with_llm(provider, message, symbol)
+        msg = message
+        if include_portfolio:
+            # Compact portfolio context
+            pf = get_portfolio()
+            if isinstance(pf, dict) and pf:
+                lines = []
+                for sym, rec in pf.items():
+                    if isinstance(rec, dict):
+                        qty = rec.get("quantity", 0)
+                        avg_buy = rec.get("avg_buy", 0)
+                        last_sell = rec.get("avg_sell", None)
+                        realized = rec.get("realized_profit", 0)
+                        lines.append(f"{sym}: qty={qty}, avg_buy={avg_buy}, last_sell={last_sell}, realized_profit={realized}")
+                if lines:
+                    summary = "\n".join(lines)
+                    msg = f"{message}\n\n[Portfolio Summary]\n{summary}"
+
+        # Pass use_crew flag via utils
+        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew)
         st.write("### Response:")
         st.write(response)
 
@@ -37,8 +57,12 @@ elif page == "Portfolio":
             if col not in df.columns:
                 df[col] = 0.0 if col != "symbol" else df.index
 
-        # Realized profit only
-        total_realized = float(df.get("realized_profit", pd.Series(dtype=float)).fillna(0.0).sum())
+        # Realized profit only (avoid FutureWarning by coercing to numeric first)
+        if "realized_profit" in df.columns:
+            rp_series = pd.to_numeric(df["realized_profit"], errors="coerce").fillna(0.0)
+        else:
+            rp_series = pd.Series([], dtype="float64")
+        total_realized = float(rp_series.sum())
         st.metric("Total Realized Profit", f"${total_realized:,.2f}")
 
         # Optional: show unrealized P/L separately for info (not part of total realized)

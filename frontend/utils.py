@@ -3,11 +3,12 @@ import requests
 
 API_URL = "http://localhost:8000"
 
-def chat_with_llm(provider, message, symbol=None):
+def chat_with_llm(provider, message, symbol=None, use_crew=True):
     r = requests.post(f"{API_URL}/chat", json={
         "provider": provider,
         "message": message,
-        "symbol": symbol
+        "symbol": symbol,
+        "use_crew": use_crew,
     })
     return r.json()["response"]
 

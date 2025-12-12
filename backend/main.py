@@ -4,8 +4,17 @@ from pydantic import BaseModel
 import json
 from pathlib import Path
 import os
+from dotenv import load_dotenv
 
 app = FastAPI()
+
+# Load environment variables from backend/.env so providers get API keys
+_ENV_PATH = Path(__file__).with_name(".env")
+try:
+    load_dotenv(dotenv_path=_ENV_PATH)
+except Exception:
+    # Fallback: try project root .env
+    load_dotenv()
 
 # Store the DB next to this file so it works regardless of CWD
 PORTFOLIO_FILE = Path(__file__).with_name("portfolio_db.json")
@@ -31,6 +40,7 @@ class ChatRequest(BaseModel):
     provider: str
     message: str
     symbol: str | None = None
+    use_crew: bool = True
 
 
 class PortfolioEntry(BaseModel):
@@ -42,19 +52,52 @@ class PortfolioEntry(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    # Lazy import avoids Windows SIGHUP error at startup
+    # Optional: direct LLM mode
+    if not req.use_crew:
+        try:
+            # Use provider factory directly (supports OpenAI-compatible for deepseek)
+            try:
+                from backend.llm_provider import LLMProvider
+            except Exception:
+                from llm_provider import LLMProvider
+
+            llm = LLMProvider.get(req.provider)
+
+            # Handle OpenAI-compatible clients
+            if hasattr(llm, "chat"):
+                # LocalPyTorchLLM.chat interface
+                text = llm.chat([{"role": "user", "content": req.message}], max_tokens=256)
+                return {"response": text}
+
+            # OpenAI Python SDK
+            if hasattr(llm, "chat") and hasattr(llm.chat, "completions"):
+                model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                comp = llm.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": req.message}],
+                    temperature=0.7,
+                )
+                text = comp.choices[0].message.content if comp and comp.choices else ""
+                return {"response": text}
+
+            return {"response": "Direct chat not supported for this provider."}
+        except Exception as e:
+            return {"response": f"Direct LLM error: {e}"}
+
+    # Crew mode (default): lazy import avoids Windows SIGHUP error at startup.
+    # Try package import first, then local module import depending on CWD.
     try:
-        from .agents import build_agents  # prefer package import if backend is a package
+        from backend.agents import build_agents  # when running from repo root
     except Exception:
         try:
-            from agents import build_agents  # fallback if running as a module
+            from agents import build_agents  # when running inside backend directory
         except Exception as e:
             return {"response": f"Agents unavailable on this platform: {e}"}
 
     crew = build_agents(req.provider)
     task = {"role": "User", "content": req.message}
     result = crew.run(task)
-    return {"response": result.raw}
+    return {"response": getattr(result, "raw", str(result))}
 
 
 @app.get("/portfolio")
