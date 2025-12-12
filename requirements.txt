@@ -1,0 +1,51 @@
+# -----------------------------
+# Core Backend
+# -----------------------------
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+
+# -----------------------------
+# LLM Providers (via unified manager)
+# -----------------------------
+
+# OpenAI (also used for DeepSeek API via custom base URL)
+openai>=1.0.0
+
+# Grok by xAI
+xai-sdk
+
+# Anthropic (Claude)
+anthropic
+
+# Google Gemini
+google-generativeai
+
+# Local LLM (GGUF models)
+llama-cpp-python
+
+# -----------------------------
+# CrewAI Agents
+# -----------------------------
+crewai
+crewai[tools]
+
+# -----------------------------
+# Data + Finance
+# -----------------------------
+numpy
+pandas
+yfinance
+requests
+httpx
+
+# MarketWatch price scraper
+beautifulsoup4
+lxml
+
+# -----------------------------
+# Streamlit Frontend
+# -----------------------------
+streamlit
+plotly
