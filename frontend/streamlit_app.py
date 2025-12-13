@@ -39,14 +39,29 @@ if page == "Chat":
     sessions = list_chats()
     titles = [f"{s.get('title','')}" for s in sessions]
     ids = [s.get("id") for s in sessions]
-    if sessions:
-        idx = st.sidebar.selectbox("Select a chat", options=list(range(len(sessions))), format_func=lambda i: titles[i])
-        selected_id = ids[idx]
+    # Selection: default to unsaved new chat when no session selected
+    select_options = ["— New chat (unsaved) —"] + titles
+    if session_id:
+        # Try to set index to current session title
+        try:
+            current_index = titles.index(next(t for i,t in enumerate(titles) if ids[i] == session_id)) + 1
+        except Exception:
+            current_index = 0
+    else:
+        current_index = 0
+
+    chosen = st.sidebar.selectbox("Select a chat", options=select_options, index=current_index)
+    if chosen != "— New chat (unsaved) —":
+        chosen_idx = titles.index(chosen)
+        selected_id = ids[chosen_idx]
         if selected_id != session_id:
             st.session_state["session_id"] = selected_id
             session_id = selected_id
-        # Rename current chat
-        new_title = st.sidebar.text_input("Rename chat", value=sessions[idx].get("title", ""))
+
+    # Rename only when a saved chat is selected
+    if session_id:
+        current_session_title = next((s.get("title","") for s in sessions if s.get("id") == session_id), "")
+        new_title = st.sidebar.text_input("Rename chat", value=current_session_title)
         if st.sidebar.button("Save Title"):
             rename_chat(session_id, new_title)
             st.rerun()
@@ -99,6 +114,7 @@ if page == "Chat":
     include_portfolio = st.checkbox("Let LLM see your portfolio")
     use_crew = st.checkbox("Use Crew (multi-agent)", value=True)
     use_history = st.checkbox("Use chat history as context", value=False)
+    use_tools = st.checkbox("Let LLM use tools (price/history)", value=False)
 
     if st.button("Send"):
         msg = message
@@ -128,7 +144,7 @@ if page == "Chat":
         append_message(session_id, "user", message)
 
         # Pass use_crew flag and history settings via utils
-        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew, use_history=use_history, session_id=session_id)
+        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew, use_history=use_history, session_id=session_id, use_tools=use_tools)
         st.write("### Response:")
         st.write(response)
 

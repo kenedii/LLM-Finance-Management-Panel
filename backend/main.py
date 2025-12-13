@@ -58,6 +58,7 @@ class ChatRequest(BaseModel):
     use_crew: bool = True
     use_history: bool = False
     session_id: str | None = None
+    use_tools: bool = False
 
 
 class PortfolioEntry(BaseModel):
@@ -90,6 +91,21 @@ def chat(req: ChatRequest):
 
             llm = LLMProvider.get(req.provider)
 
+            # Optional tools: fetch current price and/or recent history and prepend as context
+            tool_context = ""
+            if req.use_tools and req.symbol:
+                try:
+                    try:
+                        from backend.tools import get_current_price, get_historical_data
+                    except Exception:
+                        from tools import get_current_price, get_historical_data
+                    price = get_current_price(req.symbol)
+                    hist = get_historical_data(req.symbol) or []
+                    hist_preview = hist[:5] if isinstance(hist, list) else []
+                    tool_context = f"[Tools]\nSymbol: {req.symbol}\nCurrentPrice: {price}\nRecentHistory: {hist_preview}\n"
+                except Exception as e:
+                    tool_context = f"[ToolsError] {e}"
+
             # OpenAI-style client first (llm.chat.completions.create)
             if hasattr(llm, "chat") and hasattr(llm.chat, "completions") and callable(getattr(llm.chat.completions, "create", None)):
                 # Choose sensible default model based on requested provider, not base URL
@@ -98,24 +114,80 @@ def chat(req: ChatRequest):
                     default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
                 else:
                     default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                messages = [*history_messages, {"role": "user", "content": f"{tool_context}{req.message}"}]
                 comp = llm.chat.completions.create(
                     model=default_model,
-                    messages=[*history_messages, {"role": "user", "content": req.message}],
+                    messages=messages,
                     temperature=0.7,
                 )
-                text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
-                # Persist message to history
-                if req.session_id:
-                    _append_message(req.session_id, "user", req.message)
-                    _append_message(req.session_id, "assistant", text)
-                return {"response": text}
+                first_text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+
+                # Simple tool-calling loop: if model asks for a tool via JSON, run it and return a final response
+                try:
+                    import json as _json
+                    tc = _json.loads(first_text)
+                    if isinstance(tc, dict) and tc.get("tool") in {"get_current_price", "get_historical_data"}:
+                        sym = tc.get("symbol") or req.symbol
+                        try:
+                            try:
+                                from backend.tools import get_current_price, get_historical_data
+                            except Exception:
+                                from tools import get_current_price, get_historical_data
+                            if tc["tool"] == "get_current_price":
+                                tool_result = {"symbol": sym, "current_price": get_current_price(sym)}
+                            else:
+                                hist = get_historical_data(sym) or []
+                                tool_result = {"symbol": sym, "recent_history": hist[:20]}
+                        except Exception as te:
+                            tool_result = {"error": str(te)}
+
+                        follow_messages = messages + [
+                            {"role": "system", "content": f"Tool result: {tool_result}"},
+                            {"role": "user", "content": "Using the tool result above, provide the final answer."},
+                        ]
+                        comp2 = llm.chat.completions.create(
+                            model=default_model,
+                            messages=follow_messages,
+                            temperature=0.7,
+                        )
+                        final_text = comp2.choices[0].message.content if comp2 and getattr(comp2, "choices", None) else ""
+                        return {"response": final_text}
+                except Exception:
+                    pass
+
+                return {"response": first_text}
 
             # LocalPyTorchLLM or any object exposing a callable .chat(messages, ...)
             if callable(getattr(llm, "chat", None)):
-                text = llm.chat([*history_messages, {"role": "user", "content": req.message}], max_tokens=256)
-                if req.session_id:
-                    _append_message(req.session_id, "user", req.message)
-                    _append_message(req.session_id, "assistant", text)
+                messages = [*history_messages, {"role": "user", "content": f"{tool_context}{req.message}"}]
+                text = llm.chat(messages, max_tokens=256)
+                # Attempt the same tool-calling pattern for local models
+                try:
+                    import json as _json
+                    tc = _json.loads(text)
+                    if isinstance(tc, dict) and tc.get("tool") in {"get_current_price", "get_historical_data"}:
+                        sym = tc.get("symbol") or req.symbol
+                        try:
+                            try:
+                                from backend.tools import get_current_price, get_historical_data
+                            except Exception:
+                                from tools import get_current_price, get_historical_data
+                            if tc["tool"] == "get_current_price":
+                                tool_result = {"symbol": sym, "current_price": get_current_price(sym)}
+                            else:
+                                hist = get_historical_data(sym) or []
+                                tool_result = {"symbol": sym, "recent_history": hist[:20]}
+                        except Exception as te:
+                            tool_result = {"error": str(te)}
+
+                        # Local model second pass
+                        final = llm.chat(messages + [
+                            {"role": "system", "content": f"Tool result: {tool_result}"},
+                            {"role": "user", "content": "Using the tool result above, provide the final answer."},
+                        ], max_tokens=256)
+                        return {"response": final}
+                except Exception:
+                    pass
                 return {"response": text}
 
             return {"response": "Direct chat not supported for this provider."}

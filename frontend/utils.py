@@ -3,7 +3,7 @@ import requests
 
 API_URL = "http://localhost:8000"
 
-def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=False, session_id=None):
+def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=False, session_id=None, use_tools=False):
     r = requests.post(f"{API_URL}/chat", json={
         "provider": provider,
         "message": message,
@@ -11,6 +11,7 @@ def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=Fal
         "use_crew": use_crew,
         "use_history": use_history,
         "session_id": session_id,
+        "use_tools": use_tools,
     })
     return r.json()["response"]
 
