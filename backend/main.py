@@ -59,6 +59,8 @@ class ChatRequest(BaseModel):
     use_history: bool = False
     session_id: str | None = None
     use_tools: bool = False
+    # When asking for multiple symbols explicitly (optional override)
+    symbols: list[str] | None = None
 
 
 class PortfolioEntry(BaseModel):
@@ -91,18 +93,65 @@ def chat(req: ChatRequest):
 
             llm = LLMProvider.get(req.provider)
 
-            # Optional tools: fetch current price and/or recent history and prepend as context
-            tool_context = ""
-            if req.use_tools and req.symbol:
+            # Helper: detect symbols from request, message text, and portfolio
+            def _detect_symbols_from_text(text: str) -> list[str]:
+                syms = set()
+                words = [w.strip().upper().strip('.,:;!()[]{}') for w in (text or '').split()]
+                # Simple heuristic: uppercase tokens of 1-6 chars (AAPL, TSLA, BTC, ETH)
+                for w in words:
+                    if 1 <= len(w) <= 6 and w.isalnum() and w.upper() == w and not w.isdigit():
+                        syms.add(w)
+                return list(syms)
+
+            # Build list of candidate symbols
+            candidate_symbols: list[str] = []
+            if req.symbol:
+                candidate_symbols.append(req.symbol.upper())
+            if req.symbols:
+                candidate_symbols.extend([s.upper() for s in req.symbols])
+            candidate_symbols.extend(_detect_symbols_from_text(req.message))
+            # If portfolio is loaded, add its symbols when user asks generically about "my portfolio"
+            portfolio_syms = []
+            if "portfolio" in (req.message.lower()):
+                try:
+                    portfolio_syms = list(load_portfolio().keys())
+                except Exception:
+                    portfolio_syms = []
+            candidate_symbols.extend([s.upper() for s in portfolio_syms])
+            # Deduplicate and cap to a small batch to avoid long calls
+            candidate_symbols = list(dict.fromkeys(candidate_symbols))[:10]
+
+            # Optional tools: proactively run for multiple symbols, even if model doesn't explicitly ask
+            tool_results = []
+            tool_context_header = (
+                "You have access to two tools and should use them autonomously when the user asks for prices or history: "
+                "get_current_price(symbol: str) and get_historical_data(symbol: str). "
+                "Do not ask the user to confirm tool usage. If the request is clear, fetch the data and provide the final answer. "
+                "Only ask follow-up questions if the user's instructions are strictly unclear or contradictory."
+            )
+            tool_context = tool_context_header
+            if req.use_tools and candidate_symbols:
                 try:
                     try:
                         from backend.tools import get_current_price, get_historical_data
                     except Exception:
                         from tools import get_current_price, get_historical_data
-                    price = get_current_price(req.symbol)
-                    hist = get_historical_data(req.symbol) or []
-                    hist_preview = hist[:5] if isinstance(hist, list) else []
-                    tool_context = f"[Tools]\nSymbol: {req.symbol}\nCurrentPrice: {price}\nRecentHistory: {hist_preview}\n"
+                    for sym in candidate_symbols:
+                        # Current price
+                        try:
+                            price = get_current_price(sym)
+                        except Exception as e:
+                            price = {"error": str(e)}
+                        # Short history preview
+                        try:
+                            hist = get_historical_data(sym) or []
+                            hist_preview = hist[:10] if isinstance(hist, list) else []
+                        except Exception as e:
+                            hist_preview = {"error": str(e)}
+                        tool_results.append({"symbol": sym, "current_price": price, "recent_history": hist_preview})
+                    tool_context = (
+                        tool_context_header + "\n[Tools]\nBatchResults: " + json.dumps(tool_results, ensure_ascii=False)
+                    )
                 except Exception as e:
                     tool_context = f"[ToolsError] {e}"
 
@@ -114,7 +163,14 @@ def chat(req: ChatRequest):
                     default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
                 else:
                     default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-                messages = [*history_messages, {"role": "user", "content": f"{tool_context}{req.message}"}]
+                # Always include a system message enumerating available tools
+                messages = [
+                    *history_messages,
+                    {"role": "system", "content": "You can autonomously use tools to answer questions requiring current price or historical data. "
+                                                "Available tools: get_current_price(symbol: str), get_historical_data(symbol: str). "
+                                                "Avoid asking for confirmation; provide a final, data-backed answer unless the query is unclear."},
+                    {"role": "user", "content": f"{tool_context}\n\n{req.message}"},
+                ]
                 comp = llm.chat.completions.create(
                     model=default_model,
                     messages=messages,
@@ -122,28 +178,46 @@ def chat(req: ChatRequest):
                 )
                 first_text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
 
-                # Simple tool-calling loop: if model asks for a tool via JSON, run it and return a final response
+                # Tool-calling loop: support single or multiple tool requests via JSON
                 try:
                     import json as _json
                     tc = _json.loads(first_text)
-                    if isinstance(tc, dict) and tc.get("tool") in {"get_current_price", "get_historical_data"}:
-                        sym = tc.get("symbol") or req.symbol
+                    tool_batch = []
+                    if isinstance(tc, dict):
+                        tool_batch = [tc]
+                    elif isinstance(tc, list):
+                        tool_batch = tc
+
+                    if req.use_tools and tool_batch:
+                        # Execute all requested tools
+                        results = []
                         try:
                             try:
                                 from backend.tools import get_current_price, get_historical_data
                             except Exception:
                                 from tools import get_current_price, get_historical_data
-                            if tc["tool"] == "get_current_price":
-                                tool_result = {"symbol": sym, "current_price": get_current_price(sym)}
-                            else:
-                                hist = get_historical_data(sym) or []
-                                tool_result = {"symbol": sym, "recent_history": hist[:20]}
+                            for item in tool_batch:
+                                tname = item.get("tool")
+                                sym = (item.get("symbol") or req.symbol or "").upper()
+                                if not sym:
+                                    continue
+                                if tname == "get_current_price":
+                                    try:
+                                        results.append({"symbol": sym, "current_price": get_current_price(sym)})
+                                    except Exception as te:
+                                        results.append({"symbol": sym, "error": str(te)})
+                                elif tname == "get_historical_data":
+                                    try:
+                                        hist = get_historical_data(sym) or []
+                                        results.append({"symbol": sym, "recent_history": hist[:50]})
+                                    except Exception as te:
+                                        results.append({"symbol": sym, "error": str(te)})
                         except Exception as te:
-                            tool_result = {"error": str(te)}
+                            results = [{"error": str(te)}]
 
                         follow_messages = messages + [
-                            {"role": "system", "content": f"Tool result: {tool_result}"},
-                            {"role": "user", "content": "Using the tool result above, provide the final answer."},
+                            {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
+                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
                         ]
                         comp2 = llm.chat.completions.create(
                             model=default_model,
@@ -155,39 +229,81 @@ def chat(req: ChatRequest):
                 except Exception:
                     pass
 
+                # If tools were enabled but the model didn't ask, we already provided tool_context with batch results.
+                # Ask the model to incorporate them explicitly.
+                if req.use_tools and tool_results:
+                    follow_messages = messages + [
+                        {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
+                        {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
+                    ]
+                    comp2 = llm.chat.completions.create(
+                        model=default_model,
+                        messages=follow_messages,
+                        temperature=0.7,
+                    )
+                    final_text = comp2.choices[0].message.content if comp2 and getattr(comp2, "choices", None) else first_text
+                    return {"response": final_text}
+
                 return {"response": first_text}
 
             # LocalPyTorchLLM or any object exposing a callable .chat(messages, ...)
             if callable(getattr(llm, "chat", None)):
-                messages = [*history_messages, {"role": "user", "content": f"{tool_context}{req.message}"}]
+                messages = [
+                    *history_messages,
+                    {"role": "system", "content": "You can autonomously use tools to answer questions requiring current price or historical data. "
+                                                "Available tools: get_current_price(symbol: str), get_historical_data(symbol: str). "
+                                                "Avoid asking for confirmation; provide a final, data-backed answer unless the query is unclear."},
+                    {"role": "user", "content": f"{tool_context}\n\n{req.message}"},
+                ]
                 text = llm.chat(messages, max_tokens=256)
                 # Attempt the same tool-calling pattern for local models
                 try:
                     import json as _json
                     tc = _json.loads(text)
-                    if isinstance(tc, dict) and tc.get("tool") in {"get_current_price", "get_historical_data"}:
-                        sym = tc.get("symbol") or req.symbol
+                    tool_batch = []
+                    if isinstance(tc, dict):
+                        tool_batch = [tc]
+                    elif isinstance(tc, list):
+                        tool_batch = tc
+                    if req.use_tools and tool_batch:
+                        results = []
                         try:
                             try:
                                 from backend.tools import get_current_price, get_historical_data
                             except Exception:
                                 from tools import get_current_price, get_historical_data
-                            if tc["tool"] == "get_current_price":
-                                tool_result = {"symbol": sym, "current_price": get_current_price(sym)}
-                            else:
-                                hist = get_historical_data(sym) or []
-                                tool_result = {"symbol": sym, "recent_history": hist[:20]}
+                            for item in tool_batch:
+                                tname = item.get("tool")
+                                sym = (item.get("symbol") or req.symbol or "").upper()
+                                if not sym:
+                                    continue
+                                if tname == "get_current_price":
+                                    try:
+                                        results.append({"symbol": sym, "current_price": get_current_price(sym)})
+                                    except Exception as te:
+                                        results.append({"symbol": sym, "error": str(te)})
+                                elif tname == "get_historical_data":
+                                    try:
+                                        hist = get_historical_data(sym) or []
+                                        results.append({"symbol": sym, "recent_history": hist[:50]})
+                                    except Exception as te:
+                                        results.append({"symbol": sym, "error": str(te)})
                         except Exception as te:
-                            tool_result = {"error": str(te)}
+                            results = [{"error": str(te)}]
 
-                        # Local model second pass
                         final = llm.chat(messages + [
-                            {"role": "system", "content": f"Tool result: {tool_result}"},
-                            {"role": "user", "content": "Using the tool result above, provide the final answer."},
+                            {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
+                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
                         ], max_tokens=256)
                         return {"response": final}
                 except Exception:
                     pass
+                if req.use_tools and tool_results:
+                    final = llm.chat(messages + [
+                        {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
+                        {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
+                    ], max_tokens=256)
+                    return {"response": final}
                 return {"response": text}
 
             return {"response": "Direct chat not supported for this provider."}

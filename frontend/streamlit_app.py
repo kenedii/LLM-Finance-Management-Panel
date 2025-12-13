@@ -116,6 +116,15 @@ if page == "Chat":
     use_history = st.checkbox("Use chat history as context", value=False)
     use_tools = st.checkbox("Let LLM use tools (price/history)", value=False)
 
+    # Make tool availability explicit in the chat UI
+    if use_tools:
+        st.info(
+            "Tools enabled: The assistant will autonomously fetch data using these tools — "
+            "get_current_price(symbol) and get_historical_data(symbol). "
+            "Ask for prices or history (e.g., 'Price of AAPL and TSLA' or 'Show recent history for my portfolio'). "
+            "It won't ask for confirmation unless your instructions are unclear."
+        )
+
     if st.button("Send"):
         msg = message
         if include_portfolio:
