@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+import subprocess
 
 app = FastAPI()
 
@@ -61,6 +62,13 @@ class ChatRequest(BaseModel):
     use_tools: bool = False
     # When asking for multiple symbols explicitly (optional override)
     symbols: list[str] | None = None
+    # Optional model overrides per provider
+    openai_model: str | None = None
+    deepseek_model: str | None = None
+    anthropic_model: str | None = None
+    gemini_model: str | None = None
+    xai_model: str | None = None
+    local_model_path: str | None = None
 
 
 class PortfolioEntry(BaseModel):
@@ -160,9 +168,9 @@ def chat(req: ChatRequest):
                 # Choose sensible default model based on requested provider, not base URL
                 p = (req.provider or "openai").strip().lower()
                 if p == "deepseek":
-                    default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+                    default_model = req.deepseek_model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
                 else:
-                    default_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                    default_model = req.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 # Always include a system message enumerating available tools
                 messages = [
                     *history_messages,
@@ -513,6 +521,28 @@ def delete_stock(symbol: str):
     pf.pop(symbol, None)
     save_portfolio(pf)
     return {"status": "deleted", "portfolio": pf}
+
+
+# -----------------------------
+# Settings utilities
+# -----------------------------
+@app.post("/settings/open_env")
+def open_env_in_notepad():
+    """Open the backend .env file in Windows Notepad for editing."""
+    try:
+        env_path = _ENV_PATH
+        # Use Notepad on Windows; fallback to system default opener otherwise
+        if os.name == "nt":
+            subprocess.Popen(["notepad", str(env_path)])
+        else:
+            # macOS/Linux fallback: try xdg-open or open
+            try:
+                subprocess.Popen(["xdg-open", str(env_path)])
+            except Exception:
+                subprocess.Popen(["open", str(env_path)])
+        return {"status": "opened"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 if __name__ == "__main__":

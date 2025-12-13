@@ -3,7 +3,8 @@ import requests
 
 API_URL = "http://localhost:8000"
 
-def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=False, session_id=None, use_tools=False):
+def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=False, session_id=None, use_tools=False,
+                  openai_model=None, deepseek_model=None, anthropic_model=None, gemini_model=None, xai_model=None, local_model_path=None):
     r = requests.post(f"{API_URL}/chat", json={
         "provider": provider,
         "message": message,
@@ -12,6 +13,12 @@ def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=Fal
         "use_history": use_history,
         "session_id": session_id,
         "use_tools": use_tools,
+        "openai_model": openai_model,
+        "deepseek_model": deepseek_model,
+        "anthropic_model": anthropic_model,
+        "gemini_model": gemini_model,
+        "xai_model": xai_model,
+        "local_model_path": local_model_path,
     })
     return r.json()["response"]
 
@@ -36,6 +43,10 @@ def append_message(chat_id, role, content):
 
 def delete_chat(chat_id):
     requests.post(f"{API_URL}/chats/{chat_id}/delete")
+
+def open_env_in_notepad():
+    """Trigger backend to open the .env file in Notepad (Windows)."""
+    requests.post(f"{API_URL}/settings/open_env")
 
 def get_portfolio():
     return requests.get(f"{API_URL}/portfolio").json()

@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="LLM Stock Platform", layout="wide")
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Chat", "Portfolio"])
+page = st.sidebar.radio("Go to", ["Chat", "Portfolio", "Settings"])
 
 provider = st.sidebar.selectbox("LLM Provider", ["openai", "deepseek", "grok", "gemini", "local"])
 
@@ -153,7 +153,28 @@ if page == "Chat":
         append_message(session_id, "user", message)
 
         # Pass use_crew flag and history settings via utils
-        response = chat_with_llm(provider, msg, symbol, use_crew=use_crew, use_history=use_history, session_id=session_id, use_tools=use_tools)
+        # Pull optional per-provider model overrides from session state
+        openai_model = st.session_state.get("openai_model")
+        deepseek_model = st.session_state.get("deepseek_model")
+        anthropic_model = st.session_state.get("anthropic_model")
+        gemini_model = st.session_state.get("gemini_model")
+        xai_model = st.session_state.get("xai_model")
+        local_model_path = st.session_state.get("local_model_path")
+        response = chat_with_llm(
+            provider,
+            msg,
+            symbol,
+            use_crew=use_crew,
+            use_history=use_history,
+            session_id=session_id,
+            use_tools=use_tools,
+            openai_model=openai_model,
+            deepseek_model=deepseek_model,
+            anthropic_model=anthropic_model,
+            gemini_model=gemini_model,
+            xai_model=xai_model,
+            local_model_path=local_model_path,
+        )
         st.write("### Response:")
         st.write(response)
 
@@ -215,3 +236,49 @@ elif page == "Portfolio":
         delete_from_portfolio(del_symbol)
         st.success(f"Deleted {del_symbol}")
         st.rerun()
+
+# --- SETTINGS PAGE ---
+elif page == "Settings":
+    st.title("⚙️ Settings")
+    st.subheader("Model configuration per provider")
+
+    st.markdown("Configure the model used for each provider. These settings override defaults during chat requests.")
+
+    # OpenAI model
+    st.session_state.setdefault("openai_model", "gpt-4o-mini")
+    openai_model = st.text_input("OpenAI model", value=st.session_state["openai_model"], help="Example: gpt-4o, gpt-4o-mini, o3-mini, etc.")
+    # DeepSeek model
+    st.session_state.setdefault("deepseek_model", "deepseek-chat")
+    deepseek_model = st.text_input("DeepSeek model", value=st.session_state["deepseek_model"], help="Example: deepseek-chat, deepseek-reasoner")
+
+    # Anthropic (Claude)
+    st.session_state.setdefault("anthropic_model", "claude-3-5-sonnet-202410")
+    anthropic_model = st.text_input("Anthropic (Claude) model", value=st.session_state["anthropic_model"], help="Example: claude-3-5-sonnet-202410")
+
+    # Gemini (Google)
+    st.session_state.setdefault("gemini_model", "gemini-1.5-pro")
+    gemini_model = st.text_input("Gemini model", value=st.session_state["gemini_model"], help="Example: gemini-1.5-pro")
+
+    # xAI (Grok)
+    st.session_state.setdefault("xai_model", "grok-beta")
+    xai_model = st.text_input("xAI (Grok) model", value=st.session_state["xai_model"], help="Example: grok-beta")
+
+    # Local transformers model path
+    st.session_state.setdefault("local_model_path", "")
+    local_model_path = st.text_input("Local model path (HF)", value=st.session_state["local_model_path"], help="Path or model id for local transformers model.")
+
+    if st.button("Save Model Settings"):
+        st.session_state["openai_model"] = openai_model
+        st.session_state["deepseek_model"] = deepseek_model
+        st.session_state["anthropic_model"] = anthropic_model
+        st.session_state["gemini_model"] = gemini_model
+        st.session_state["xai_model"] = xai_model
+        st.session_state["local_model_path"] = local_model_path
+        st.success("Model settings saved. They will be used for future chats.")
+
+    st.subheader("Environment configuration (.env)")
+    st.markdown("Open your backend .env file in Notepad to edit API keys and defaults.")
+    from utils import open_env_in_notepad
+    if st.button("Open .env in Notepad"):
+        open_env_in_notepad()
+        st.info(".env should open in Notepad. If it does not, ensure the backend server is running and you are on Windows.")
