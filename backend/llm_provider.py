@@ -6,7 +6,7 @@ anthropic, and local PyTorch transformer models.
 """
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -30,9 +30,9 @@ except:
     Anthropic = None
 
 try:
-    from google.generativeai import Client as GoogleAIClient
+    import google.generativeai as genai
 except:
-    GoogleAIClient = None
+    genai = None
 
 
 # -------------------------------------------------------------
@@ -70,6 +70,102 @@ class LocalPyTorchLLM:
 
 
 # -------------------------------------------------------------
+#  PROVIDER WRAPPERS (Unified chat interface)
+# -------------------------------------------------------------
+class OpenAIWrapper:
+    def __init__(self, client: Any):
+        self.client = client
+
+    def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        # Convert to OpenAI style messages and call chat.completions
+        m = messages
+        if hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):
+            model_name = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            comp = self.client.chat.completions.create(model=model_name, messages=m, temperature=temperature)
+            return comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+        raise RuntimeError("OpenAI client missing chat.completions interface")
+
+
+class DeepSeekWrapper(OpenAIWrapper):
+    def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        m = messages
+        if hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):
+            model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+            comp = self.client.chat.completions.create(model=model_name, messages=m, temperature=temperature)
+            return comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+        raise RuntimeError("DeepSeek client missing chat.completions interface")
+
+
+class AnthropicWrapper:
+    def __init__(self, client: Any):
+        self.client = client
+
+    def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        mdl = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-202410")
+        # Anthropics expects messages list; convert if needed
+        try:
+            resp = self.client.messages.create(
+                model=mdl,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=[{"role": m["role"], "content": m["content"]} for m in messages]
+            )
+            # Response content is a list of blocks
+            blocks = getattr(resp, "content", [])
+            if isinstance(blocks, list) and blocks:
+                # Combine any text blocks
+                texts = []
+                for b in blocks:
+                    t = getattr(b, "text", None) or (b.get("text") if isinstance(b, dict) else None)
+                    if t:
+                        texts.append(t)
+                return "\n".join(texts)
+            return getattr(resp, "output_text", "")
+        except Exception as e:
+            return f"Anthropic error: {e}"
+
+
+class GeminiWrapper:
+    def __init__(self, api_key: str):
+        if genai is None:
+            raise RuntimeError("google-generativeai not installed. pip install google-generativeai")
+        genai.configure(api_key=api_key)
+
+    def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        mdl = model or os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+        try:
+            model_obj = genai.GenerativeModel(mdl)
+            # Concatenate messages into a single prompt (Gemini supports multi-turn, but keep simple)
+            prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+            resp = model_obj.generate_content(prompt, generation_config={"temperature": temperature, "max_output_tokens": max_tokens})
+            # Extract text
+            return getattr(resp, "text", "")
+        except Exception as e:
+            return f"Gemini error: {e}"
+
+
+class XAIWrapper:
+    def __init__(self, client: Any):
+        self.client = client
+
+    def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        mdl = model or os.getenv("XAI_MODEL", "grok-beta")
+        try:
+            # Attempt a generic interface; if SDK differs, catch and report error
+            # Many SDKs use an OpenAI-like interface; try fallbacks
+            if hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):
+                comp = self.client.chat.completions.create(model=mdl, messages=messages, temperature=temperature)
+                return comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+            # Fallback: try a hypothetical messages.create
+            if hasattr(self.client, "messages") and hasattr(self.client.messages, "create"):
+                resp = self.client.messages.create(model=mdl, messages=messages, max_tokens=max_tokens, temperature=temperature)
+                return getattr(resp, "text", "")
+            return "xAI client does not expose a known chat interface."
+        except Exception as e:
+            return f"xAI error: {e}"
+
+
+# -------------------------------------------------------------
 # PROVIDER FACTORY
 # -------------------------------------------------------------
 class LLMProvider:
@@ -83,11 +179,10 @@ class LLMProvider:
         if p == "openai":
             if OpenAI is None:
                 raise RuntimeError("openai package not installed. pip install openai")
-
             api_key = os.getenv("OPENAI_API_KEY")
             base = os.getenv("OPENAI_API_BASE") or None
-
-            return OpenAI(api_key=api_key, base_url=base)
+            client = OpenAI(api_key=api_key, base_url=base)
+            return OpenAIWrapper(client)
 
         # ---------------------------------------------------------
         # DEEPSEEK (OpenAI-compatible endpoint only)
@@ -95,14 +190,10 @@ class LLMProvider:
         if p == "deepseek":
             if OpenAI is None:
                 raise RuntimeError("openai package required to call DeepSeek")
-
             ds_key = os.getenv("DEEPSEEK_API_KEY")
             ds_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
-
-            return OpenAI(
-                api_key=ds_key,
-                base_url=ds_base
-            )
+            client = OpenAI(api_key=ds_key, base_url=ds_base)
+            return DeepSeekWrapper(client)
 
         # ---------------------------------------------------------
         # GROK (xAI)
@@ -111,7 +202,8 @@ class LLMProvider:
             key = os.getenv("XAI_API_KEY")
             if XAIClient is None:
                 raise RuntimeError("xai_sdk not installed. pip install xai-sdk")
-            return XAIClient(api_key=key)
+            client = XAIClient(api_key=key)
+            return XAIWrapper(client)
 
         # ---------------------------------------------------------
         # ANTHROPIC (Claude)
@@ -120,16 +212,17 @@ class LLMProvider:
             key = os.getenv("ANTHROPIC_API_KEY")
             if Anthropic is None:
                 raise RuntimeError("anthropic package not installed. pip install anthropic")
-            return Anthropic(api_key=key)
+            client = Anthropic(api_key=key)
+            return AnthropicWrapper(client)
 
         # ---------------------------------------------------------
         # GEMINI (Google)
         # ---------------------------------------------------------
         if p in ("gemini", "google"):
             key = os.getenv("GOOGLE_API_KEY")
-            if GoogleAIClient is None:
+            if genai is None:
                 raise RuntimeError("google-generativeai not installed. pip install google-generativeai")
-            return GoogleAIClient(api_key=key)
+            return GeminiWrapper(api_key=key)
 
         # ---------------------------------------------------------
         # LOCAL PYTORCH TRANSFORMERS MODEL

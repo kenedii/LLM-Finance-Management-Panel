@@ -163,98 +163,9 @@ def chat(req: ChatRequest):
                 except Exception as e:
                     tool_context = f"[ToolsError] {e}"
 
-            # OpenAI-style client first (llm.chat.completions.create)
-            if hasattr(llm, "chat") and hasattr(llm.chat, "completions") and callable(getattr(llm.chat.completions, "create", None)):
-                # Choose sensible default model based on requested provider, not base URL
-                p = (req.provider or "openai").strip().lower()
-                if p == "deepseek":
-                    default_model = req.deepseek_model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-                else:
-                    default_model = req.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-                # Always include a system message enumerating available tools
-                messages = [
-                    *history_messages,
-                    {"role": "system", "content": "You can autonomously use tools to answer questions requiring current price or historical data. "
-                                                "Available tools: get_current_price(symbol: str), get_historical_data(symbol: str). "
-                                                "Avoid asking for confirmation; provide a final, data-backed answer unless the query is unclear."},
-                    {"role": "user", "content": f"{tool_context}\n\n{req.message}"},
-                ]
-                comp = llm.chat.completions.create(
-                    model=default_model,
-                    messages=messages,
-                    temperature=0.7,
-                )
-                first_text = comp.choices[0].message.content if comp and getattr(comp, "choices", None) else ""
+            # OpenAI-style branch removed in favor of unified chat wrappers
 
-                # Tool-calling loop: support single or multiple tool requests via JSON
-                try:
-                    import json as _json
-                    tc = _json.loads(first_text)
-                    tool_batch = []
-                    if isinstance(tc, dict):
-                        tool_batch = [tc]
-                    elif isinstance(tc, list):
-                        tool_batch = tc
-
-                    if req.use_tools and tool_batch:
-                        # Execute all requested tools
-                        results = []
-                        try:
-                            try:
-                                from backend.tools import get_current_price, get_historical_data
-                            except Exception:
-                                from tools import get_current_price, get_historical_data
-                            for item in tool_batch:
-                                tname = item.get("tool")
-                                sym = (item.get("symbol") or req.symbol or "").upper()
-                                if not sym:
-                                    continue
-                                if tname == "get_current_price":
-                                    try:
-                                        results.append({"symbol": sym, "current_price": get_current_price(sym)})
-                                    except Exception as te:
-                                        results.append({"symbol": sym, "error": str(te)})
-                                elif tname == "get_historical_data":
-                                    try:
-                                        hist = get_historical_data(sym) or []
-                                        results.append({"symbol": sym, "recent_history": hist[:50]})
-                                    except Exception as te:
-                                        results.append({"symbol": sym, "error": str(te)})
-                        except Exception as te:
-                            results = [{"error": str(te)}]
-
-                        follow_messages = messages + [
-                            {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
-                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                        ]
-                        comp2 = llm.chat.completions.create(
-                            model=default_model,
-                            messages=follow_messages,
-                            temperature=0.7,
-                        )
-                        final_text = comp2.choices[0].message.content if comp2 and getattr(comp2, "choices", None) else ""
-                        return {"response": final_text}
-                except Exception:
-                    pass
-
-                # If tools were enabled but the model didn't ask, we already provided tool_context with batch results.
-                # Ask the model to incorporate them explicitly.
-                if req.use_tools and tool_results:
-                    follow_messages = messages + [
-                        {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
-                        {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                    ]
-                    comp2 = llm.chat.completions.create(
-                        model=default_model,
-                        messages=follow_messages,
-                        temperature=0.7,
-                    )
-                    final_text = comp2.choices[0].message.content if comp2 and getattr(comp2, "choices", None) else first_text
-                    return {"response": final_text}
-
-                return {"response": first_text}
-
-            # LocalPyTorchLLM or any object exposing a callable .chat(messages, ...)
+            # Unified chat wrappers (OpenAI, DeepSeek, Anthropic, Gemini, xAI, Local)
             if callable(getattr(llm, "chat", None)):
                 messages = [
                     *history_messages,
@@ -263,7 +174,24 @@ def chat(req: ChatRequest):
                                                 "Avoid asking for confirmation; provide a final, data-backed answer unless the query is unclear."},
                     {"role": "user", "content": f"{tool_context}\n\n{req.message}"},
                 ]
-                text = llm.chat(messages, max_tokens=256)
+                p = (req.provider or "").strip().lower()
+                # Determine per-provider model override
+                model_override = None
+                if p == "deepseek":
+                    model_override = req.deepseek_model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+                elif p == "openai":
+                    model_override = req.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                elif p in {"anthropic", "claude"}:
+                    model_override = req.anthropic_model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-202410")
+                elif p in {"gemini", "google"}:
+                    model_override = req.gemini_model or os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+                elif p in {"grok", "xai"}:
+                    model_override = req.xai_model or os.getenv("XAI_MODEL", "grok-beta")
+                # Local models ignore 'model' override; use max_tokens only
+                if p in {"local", "pytorch", "hf", "transformers"}:
+                    text = llm.chat(messages, max_tokens=256)
+                else:
+                    text = llm.chat(messages, max_tokens=256, model=model_override)
                 # Attempt the same tool-calling pattern for local models
                 try:
                     import json as _json
@@ -299,18 +227,30 @@ def chat(req: ChatRequest):
                         except Exception as te:
                             results = [{"error": str(te)}]
 
-                        final = llm.chat(messages + [
+                        if p in {"local", "pytorch", "hf", "transformers"}:
+                            final = llm.chat(messages + [
+                                {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
+                                {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
+                            ], max_tokens=256)
+                        else:
+                            final = llm.chat(messages + [
                             {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
                             {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                        ], max_tokens=256)
+                        ], max_tokens=256, model=model_override)
                         return {"response": final}
                 except Exception:
                     pass
                 if req.use_tools and tool_results:
-                    final = llm.chat(messages + [
+                    if p in {"local", "pytorch", "hf", "transformers"}:
+                        final = llm.chat(messages + [
+                            {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
+                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
+                        ], max_tokens=256)
+                    else:
+                        final = llm.chat(messages + [
                         {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
                         {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                    ], max_tokens=256)
+                    ], max_tokens=256, model=model_override)
                     return {"response": final}
                 return {"response": text}
 

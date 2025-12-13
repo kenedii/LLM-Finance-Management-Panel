@@ -265,7 +265,23 @@ elif page == "Settings":
 
     # Local transformers model path
     st.session_state.setdefault("local_model_path", "")
-    local_model_path = st.text_input("Local model path (HF)", value=st.session_state["local_model_path"], help="Path or model id for local transformers model.")
+    st.session_state.setdefault("local_model_preset", "")
+    st.markdown("""
+    Choose a local Q&A model preset (downloads automatically when used), or provide a custom HuggingFace model id/path. 
+    Approximate parameter sizes help estimate VRAM needs.
+    """)
+    presets = [
+        ("Phi-3-mini-4k-instruct — ~3.8B (low VRAM)", "microsoft/Phi-3-mini-4k-instruct"),
+        ("Llama-3.2-3B-Instruct — ~3B (low VRAM)", "meta-llama/Llama-3.2-3B-Instruct"),
+        ("Mistral-7B-Instruct — ~7B (medium VRAM)", "mistralai/Mistral-7B-Instruct"),
+        ("Llama-3.1-8B-Instruct — ~8B (high VRAM)", "meta-llama/Llama-3.1-8B-Instruct"),
+    ]
+    preset_labels = [p[0] for p in presets]
+    default_index = 0 if not st.session_state.get("local_model_preset") else next((i for i,l in enumerate(preset_labels) if presets[i][1] == st.session_state["local_model_preset"]), 0)
+    selected_label = st.selectbox("Local model preset", options=preset_labels, index=default_index)
+    selected_model_id = dict(presets)[selected_label]
+    # Keep both preset and explicit path so power users can override
+    local_model_path = st.text_input("Custom local model id/path (optional)", value=st.session_state["local_model_path"], help="E.g., microsoft/Phi-3-mini-4k-instruct or local folder path")
 
     if st.button("Save Model Settings"):
         st.session_state["openai_model"] = openai_model
@@ -273,7 +289,9 @@ elif page == "Settings":
         st.session_state["anthropic_model"] = anthropic_model
         st.session_state["gemini_model"] = gemini_model
         st.session_state["xai_model"] = xai_model
-        st.session_state["local_model_path"] = local_model_path
+        # Prefer custom path when provided; otherwise use preset id
+        st.session_state["local_model_preset"] = selected_model_id
+        st.session_state["local_model_path"] = local_model_path or selected_model_id
         st.success("Model settings saved. They will be used for future chats.")
 
     st.subheader("Environment configuration (.env)")

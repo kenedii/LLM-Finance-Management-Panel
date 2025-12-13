@@ -68,29 +68,28 @@ def _resolve_asset(symbol: str) -> dict:
 
 
 def get_current_price(symbol: str):
-    """Return a dict with current price and metadata, resolving asset classes.
+    """Return current price as a float for the resolved asset symbol.
 
-    Output: { symbol, input, asset_type, name, currency, price }
-    - Precious metals (XAUUSD=X, XAGUSD=X) represent spot price per troy ounce in the given currency.
+    This ensures tool outputs remain simple scalars for price.
     """
     meta = _resolve_asset(symbol)
     mapped = meta["symbol"]
     try:
         t = yf.Ticker(mapped)
-        # Prefer fast_info if available
-        price = getattr(t, "fast_info", {}).get("last_price")
+        price = None
+        fi = getattr(t, "fast_info", None)
+        if isinstance(fi, dict):
+            price = fi.get("last_price")
         if price is None:
             info = getattr(t, "info", {}) or {}
             price = info.get("regularMarketPrice")
-        # As a last resort, fetch recent history and use the last close
         if price is None:
             hist = t.history(period="5d")
             if isinstance(hist, pd.DataFrame) and not hist.empty:
                 price = float(hist["Close"].iloc[-1])
-        meta["price"] = None if price is None else float(price)
+        return None if price is None else float(price)
     except Exception:
-        meta["price"] = None
-    return meta
+        return None
 
 
 def get_historical_data(symbol: str):
@@ -131,3 +130,8 @@ def get_historical_data(symbol: str):
         return out.to_dict(orient="records")
     except Exception:
         return []
+
+def get_asset_info(symbol: str):
+    """Return basic metadata for the resolved asset to help verify correctness."""
+    meta = _resolve_asset(symbol)
+    return meta
