@@ -1,59 +1,57 @@
 # -----------------------------
 # Core Backend
 # -----------------------------
-fastapi
-uvicorn[standard]
-pydantic
-python-dotenv
+fastapi==0.124.4
+uvicorn==0.38.0
+pydantic==2.12.5
+pydantic-settings==2.12.0
+pydantic_core==2.41.5
+python-dotenv==1.2.1
 
 # -----------------------------
 # LLM Providers (via unified manager)
 # -----------------------------
+openai==2.11.0
+xai-sdk==1.5.0
+anthropic==0.75.0
+google-generativeai==0.8.5
 
-# OpenAI (also used for DeepSeek API via custom base URL)
-openai>=1.0.0
+# -----------------------------
+# Autogen (multi-agent framework)
+# -----------------------------
+autogen
+autogen-agentchat
 
-# Grok by xAI
-xai-sdk
-
-# Anthropic (Claude)
-anthropic
-
-# Google Gemini
-google-generativeai
-
+# -----------------------------
 # Local LLM (with PyTorch)
-torch
-# Ensure compatible tokenizers for CrewAI/Transformers stack
-tokenizers>=0.21,<0.22
-# Upgrade transformers to a version compatible with tokenizers >=0.21
-transformers>=4.45.0
-accelerate>=1.0.0
-
 # -----------------------------
-# CrewAI Agents (align with modern langchain & packaging)
-# -----------------------------
-packaging>=25.0
-langchain-core>=0.3.0
-langchain>=0.3.0
-crewai>=0.54.0
-crewai[tools]>=0.54.0
+torch==2.9.1
+tokenizers==0.21.4
+transformers==4.55.4
+accelerate==1.12.0
 
 # -----------------------------
 # Data + Finance
 # -----------------------------
-numpy
-pandas
-yfinance
-requests
-httpx
+numpy==2.3.5
+pandas==2.3.3
+yfinance==0.2.66
+requests==2.32.5
+httpx==0.28.1
+httpx-sse==0.4.3
 
 # MarketWatch price scraper
-beautifulsoup4
-lxml
+beautifulsoup4==4.14.3
+lxml==6.0.2
 
 # -----------------------------
 # Streamlit Frontend
 # -----------------------------
-streamlit
-plotly
+streamlit==1.52.1
+plotly==6.5.0
+
+# -----------------------------
+# Additional Packages
+# -----------------------------
+requests-oauthlib==2.0.0
+requests-toolbelt==1.0.0
