@@ -330,65 +330,75 @@ def add_stock(entry: PortfolioEntry):
     - If avg_sell is set  -> SELL: decrease quantity and add realized profit = (sell - avg_buy) * qty_sold.
     """
     pf = load_portfolio()
-    sym = entry.symbol
+    sym = entry.symbol.upper() # Ensure symbol is uppercase for consistency
 
     current = pf.get(sym)
     if not current:
         # Initialize record for a new symbol
         current = {
             "symbol": sym,
-            "avg_buy": float(entry.avg_buy) if entry.avg_sell is None else 0.0,
+            "avg_buy": 0.0, # Initialize buy price to 0.0
             "avg_sell": None,
             "quantity": 0.0,
             "realized_profit": 0.0,
         }
+    else:
+        # Ensure data types are floats for calculations
+        current["quantity"] = float(current.get("quantity", 0.0))
+        current["avg_buy"] = float(current.get("avg_buy", 0.0))
+        current["realized_profit"] = float(current.get("realized_profit", 0.0))
 
-    qty = float(entry.quantity or 0.0)
+    qty_transacted = float(entry.quantity or 0.0)
 
     if entry.avg_sell is None:
-        # BUY: merge with weighted-average
-        prev_qty = float(current.get("quantity", 0.0))
-        prev_avg_buy = float(current.get("avg_buy", entry.avg_buy))
-        new_qty = prev_qty + qty
+        # --- BUY LOGIC ---
+        buy_price = float(entry.avg_buy)
+        prev_qty = current["quantity"]
+        prev_avg_buy = current["avg_buy"]
+        new_qty = prev_qty + qty_transacted
 
         if new_qty > 0:
-            new_avg_buy = ((prev_avg_buy * prev_qty) + (float(entry.avg_buy) * qty)) / new_qty
-        else:
-            new_avg_buy = prev_avg_buy  # safe fallback
+            # Weighted Average Cost (WAC) calculation
+            # New Avg Buy = [(Old Avg Buy * Old Qty) + (New Buy Price * New Qty)] / New Total Qty
+            new_avg_buy = ((prev_avg_buy * prev_qty) + (buy_price * qty_transacted)) / new_qty
+            current["avg_buy"] = round(new_avg_buy, 6)
+        # If new_qty is 0 (e.g., initial qty was -2 and you bought 2), avg_buy is preserved.
 
-        current["avg_buy"] = round(new_avg_buy, 6)
         current["quantity"] = round(new_qty, 6)
-        current["avg_sell"] = None
+        # We do not touch avg_sell on a buy, though we might clear it if we want to track
+        # *only* the last sale price when current holdings exist. We'll leave it as None/last sell.
+
     else:
-        # SELL: realize profit and reduce quantity
+        # --- SELL LOGIC ---
         sell_price = float(entry.avg_sell)
-        prev_qty = float(current.get("quantity", 0.0))
-        prev_avg_buy = float(current.get("avg_buy", entry.avg_buy))
+        prev_qty = current["quantity"]
+        prev_avg_buy = current["avg_buy"]
 
-        # If user provided both buy and sell in one submission and no holdings exist,
-        # treat it as a buy-then-sell for the given quantity to realize profit.
-        if prev_qty <= 0 and entry.avg_buy and qty > 0:
-            # bootstrap a buy
-            current["avg_buy"] = float(entry.avg_buy)
-            current["quantity"] = float(qty)
-            prev_qty = current["quantity"]
-            prev_avg_buy = current["avg_buy"]
+        # Determine the quantity sold, limited by the current holdings
+        sell_qty = min(qty_transacted, prev_qty)
 
-        # After optional bootstrap, if still no holdings, just record last sell price and exit
-        if prev_qty <= 0:
-            current["avg_sell"] = round(sell_price, 6)
-            pf[sym] = current
-            save_portfolio(pf)
-            return {"status": "no-holdings", "portfolio": pf}
-
-        sell_qty = min(qty, prev_qty)
         if sell_qty > 0:
+            # Realized Profit calculation: (Sell Price - Average Cost) * Quantity Sold
             realized = (sell_price - prev_avg_buy) * sell_qty
-            current["realized_profit"] = round(float(current.get("realized_profit", 0.0)) + realized, 6)
+            current["realized_profit"] = round(current["realized_profit"] + realized, 6)
+            
+            # Update quantity held
             current["quantity"] = round(prev_qty - sell_qty, 6)
-            current["avg_sell"] = round(sell_price, 6)
+            
+        # The key change: Update the last sell price without changing avg_buy
+        current["avg_sell"] = round(sell_price, 6)
+        
+        # Scenario where selling more than held (e.g., shorting or error):
+        # We process the sell for the held amount, and leave the remaining quantity as a potential
+        # error or short position, but we don't change `avg_buy`.
 
-    pf[sym] = current
+    # Only save the symbol if it has an actual transaction or remaining quantity
+    if current["quantity"] != 0.0 or current["realized_profit"] != 0.0 or current["avg_sell"] is not None:
+        pf[sym] = current
+    elif sym in pf:
+        # If all values zeroed out and it exists, delete it (optional cleanup)
+        del pf[sym]
+
     save_portfolio(pf)
     return {"status": "updated", "portfolio": pf}
 
