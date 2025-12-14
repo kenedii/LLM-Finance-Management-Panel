@@ -24,14 +24,20 @@ google-generativeai
 
 # Local LLM (with PyTorch)
 torch
-transformers
-accelerate
+# Ensure compatible tokenizers for CrewAI/Transformers stack
+tokenizers>=0.21,<0.22
+# Upgrade transformers to a version compatible with tokenizers >=0.21
+transformers>=4.45.0
+accelerate>=1.0.0
 
 # -----------------------------
-# CrewAI Agents
+# CrewAI Agents (align with modern langchain & packaging)
 # -----------------------------
-crewai<0.54
-crewai[tools]<0.54
+packaging>=25.0
+langchain-core>=0.3.0
+langchain>=0.3.0
+crewai>=0.54.0
+crewai[tools]>=0.54.0
 
 # -----------------------------
 # Data + Finance

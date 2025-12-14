@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI
 from pydantic import BaseModel
 import json
@@ -7,6 +6,19 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import subprocess
+from typing import List, Dict, Any
+
+# --- CRITICAL FIX: Centralize Imports for Autogen/LLM/Tools ---
+# CrewAI imports (like build_agents) and logic have been removed.
+try:
+    from backend.llm_provider import LLMProvider
+    from backend.tools import get_current_price, get_historical_data
+    from backend.autogen_agents import run_autogen_conversation
+except Exception:
+    # Fallback for local execution
+    from llm_provider import LLMProvider
+    from tools import get_current_price, get_historical_data
+    from autogen_agents import run_autogen_conversation 
 
 app = FastAPI()
 
@@ -56,7 +68,9 @@ class ChatRequest(BaseModel):
     provider: str
     message: str
     symbol: str | None = None
-    use_crew: bool = True
+    # CrewAI has been removed, this is kept for compatibility but defaults to False
+    use_crew: bool = False 
+    use_autogen: bool = False
     use_history: bool = False
     session_id: str | None = None
     use_tools: bool = False
@@ -80,199 +94,123 @@ class PortfolioEntry(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    # Build context from history if requested
-    history_messages = []
-    if req.use_history and req.session_id:
-        chats = load_chats()
-        session = next((s for s in chats.get("sessions", []) if s.get("id") == req.session_id), None)
-        if session:
-            for m in session.get("messages", []):
-                # Map to generic chat format
-                history_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-
-    # Optional: direct LLM mode
-    if not req.use_crew:
-        try:
-            # Use provider factory directly (supports OpenAI-compatible for deepseek)
-            try:
-                from backend.llm_provider import LLMProvider
-            except Exception:
-                from llm_provider import LLMProvider
-
-            llm = LLMProvider.get(req.provider)
-
-            # Helper: detect symbols from request, message text, and portfolio
-            def _detect_symbols_from_text(text: str) -> list[str]:
-                syms = set()
-                words = [w.strip().upper().strip('.,:;!()[]{}') for w in (text or '').split()]
-                # Simple heuristic: uppercase tokens of 1-6 chars (AAPL, TSLA, BTC, ETH)
-                for w in words:
-                    if 1 <= len(w) <= 6 and w.isalnum() and w.upper() == w and not w.isdigit():
-                        syms.add(w)
-                return list(syms)
-
-            # Build list of candidate symbols
-            candidate_symbols: list[str] = []
-            if req.symbol:
-                candidate_symbols.append(req.symbol.upper())
-            if req.symbols:
-                candidate_symbols.extend([s.upper() for s in req.symbols])
-            candidate_symbols.extend(_detect_symbols_from_text(req.message))
-            # If portfolio is loaded, add its symbols when user asks generically about "my portfolio"
-            portfolio_syms = []
-            if "portfolio" in (req.message.lower()):
-                try:
-                    portfolio_syms = list(load_portfolio().keys())
-                except Exception:
-                    portfolio_syms = []
-            candidate_symbols.extend([s.upper() for s in portfolio_syms])
-            # Deduplicate and cap to a small batch to avoid long calls
-            candidate_symbols = list(dict.fromkeys(candidate_symbols))[:10]
-
-            # Optional tools: proactively run for multiple symbols, even if model doesn't explicitly ask
-            tool_results = []
-            tool_context_header = (
-                "You have access to two tools and should use them autonomously when the user asks for prices or history: "
-                "get_current_price(symbol: str) and get_historical_data(symbol: str). "
-                "Do not ask the user to confirm tool usage. If the request is clear, fetch the data and provide the final answer. "
-                "Only ask follow-up questions if the user's instructions are strictly unclear or contradictory."
-            )
-            tool_context = tool_context_header
-            if req.use_tools and candidate_symbols:
-                try:
-                    try:
-                        from backend.tools import get_current_price, get_historical_data
-                    except Exception:
-                        from tools import get_current_price, get_historical_data
-                    for sym in candidate_symbols:
-                        # Current price
-                        try:
-                            price = get_current_price(sym)
-                        except Exception as e:
-                            price = {"error": str(e)}
-                        # Short history preview
-                        try:
-                            hist = get_historical_data(sym) or []
-                            hist_preview = hist[:10] if isinstance(hist, list) else []
-                        except Exception as e:
-                            hist_preview = {"error": str(e)}
-                        tool_results.append({"symbol": sym, "current_price": price, "recent_history": hist_preview})
-                    tool_context = (
-                        tool_context_header + "\n[Tools]\nBatchResults: " + json.dumps(tool_results, ensure_ascii=False)
-                    )
-                except Exception as e:
-                    tool_context = f"[ToolsError] {e}"
-
-            # OpenAI-style branch removed in favor of unified chat wrappers
-
-            # Unified chat wrappers (OpenAI, DeepSeek, Anthropic, Gemini, xAI, Local)
-            if callable(getattr(llm, "chat", None)):
-                messages = [
-                    *history_messages,
-                    {"role": "system", "content": "You can autonomously use tools to answer questions requiring current price or historical data. "
-                                                "Available tools: get_current_price(symbol: str), get_historical_data(symbol: str). "
-                                                "Avoid asking for confirmation; provide a final, data-backed answer unless the query is unclear."},
-                    {"role": "user", "content": f"{tool_context}\n\n{req.message}"},
-                ]
-                p = (req.provider or "").strip().lower()
-                # Determine per-provider model override
-                model_override = None
-                if p == "deepseek":
-                    model_override = req.deepseek_model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-                elif p == "openai":
-                    model_override = req.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-                elif p in {"anthropic", "claude"}:
-                    model_override = req.anthropic_model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-202410")
-                elif p in {"gemini", "google"}:
-                    model_override = req.gemini_model or os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
-                elif p in {"grok", "xai"}:
-                    model_override = req.xai_model or os.getenv("XAI_MODEL", "grok-beta")
-                # Local models ignore 'model' override; use max_tokens only
-                if p in {"local", "pytorch", "hf", "transformers"}:
-                    text = llm.chat(messages, max_tokens=256)
-                else:
-                    text = llm.chat(messages, max_tokens=256, model=model_override)
-                # Attempt the same tool-calling pattern for local models
-                try:
-                    import json as _json
-                    tc = _json.loads(text)
-                    tool_batch = []
-                    if isinstance(tc, dict):
-                        tool_batch = [tc]
-                    elif isinstance(tc, list):
-                        tool_batch = tc
-                    if req.use_tools and tool_batch:
-                        results = []
-                        try:
-                            try:
-                                from backend.tools import get_current_price, get_historical_data
-                            except Exception:
-                                from tools import get_current_price, get_historical_data
-                            for item in tool_batch:
-                                tname = item.get("tool")
-                                sym = (item.get("symbol") or req.symbol or "").upper()
-                                if not sym:
-                                    continue
-                                if tname == "get_current_price":
-                                    try:
-                                        results.append({"symbol": sym, "current_price": get_current_price(sym)})
-                                    except Exception as te:
-                                        results.append({"symbol": sym, "error": str(te)})
-                                elif tname == "get_historical_data":
-                                    try:
-                                        hist = get_historical_data(sym) or []
-                                        results.append({"symbol": sym, "recent_history": hist[:50]})
-                                    except Exception as te:
-                                        results.append({"symbol": sym, "error": str(te)})
-                        except Exception as te:
-                            results = [{"error": str(te)}]
-
-                        if p in {"local", "pytorch", "hf", "transformers"}:
-                            final = llm.chat(messages + [
-                                {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
-                                {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                            ], max_tokens=256)
-                        else:
-                            final = llm.chat(messages + [
-                            {"role": "system", "content": f"Tool results: {json.dumps(results, ensure_ascii=False)}"},
-                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                        ], max_tokens=256, model=model_override)
-                        return {"response": final}
-                except Exception:
-                    pass
-                if req.use_tools and tool_results:
-                    if p in {"local", "pytorch", "hf", "transformers"}:
-                        final = llm.chat(messages + [
-                            {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
-                            {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                        ], max_tokens=256)
-                    else:
-                        final = llm.chat(messages + [
-                        {"role": "system", "content": f"Tool results: {json.dumps(tool_results, ensure_ascii=False)}"},
-                        {"role": "user", "content": "Using the tool results above, provide the final answer with clear, current figures and cite the date range for history."},
-                    ], max_tokens=256, model=model_override)
-                    return {"response": final}
-                return {"response": text}
-
-            return {"response": "Direct chat not supported for this provider."}
-        except Exception as e:
-            return {"response": f"Direct LLM error: {e}"}
-
-    # Crew mode (default): lazy import avoids Windows SIGHUP error at startup.
-    # Try package import first, then local module import depending on CWD.
+    # Always return a JSON dictionary with a "response" key, even on failure.
     try:
-        from backend.agents import build_agents  # when running from repo root
-    except Exception:
-        try:
-            from agents import build_agents  # when running inside backend directory
-        except Exception as e:
-            return {"response": f"Agents unavailable on this platform: {e}"}
+        # Build context from history if requested
+        history_messages: List[Dict[str, str]] = []
+        if req.use_history and req.session_id:
+            chats = load_chats()
+            session = next((s for s in chats.get("sessions", []) if s.get("id") == req.session_id), None)
+            if session:
+                for m in session.get("messages", []):
+                    # Map to generic chat format
+                    history_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
 
-    crew = build_agents(req.provider)
-    # Crew mode: we only send current user message; agents can be made to use history if desired
-    task = {"role": "User", "content": req.message}
-    result = crew.run(task)
-    return {"response": getattr(result, "raw", str(result))}
+        # --- 1. Autogen Agent Mode ---
+        if req.use_autogen:
+            history = history_messages if req.use_history else []
+            # This calls your Autogen implementation in autogen_agents.py
+            result = run_autogen_conversation(provider=req.provider, user_message=req.message, history=history)
+            return {"response": result}
+
+        # --- 2. Direct LLM Mode (Default/Fallback) ---
+        # This mode is used when use_autogen is False. It makes a direct call to the LLM.
+        llm = LLMProvider.get(req.provider)
+
+        # Helper: detect symbols from request, message text, and portfolio
+        def _detect_symbols_from_text(text: str) -> list[str]:
+            syms = set()
+            words = [w.strip().upper().strip('.,:;!()[]{}') for w in (text or '').split()]
+            # Simple heuristic: uppercase tokens of 1-6 chars (AAPL, TSLA, BTC, ETH)
+            for w in words:
+                if 1 <= len(w) <= 6 and w.isalnum() and w.upper() == w and not w.isdigit():
+                    syms.add(w)
+            return list(syms)
+
+        # Build list of candidate symbols
+        candidate_symbols: list[str] = []
+        if req.symbol:
+            candidate_symbols.append(req.symbol.upper())
+        if req.symbols:
+            candidate_symbols.extend([s.upper() for s in req.symbols])
+        candidate_symbols.extend(_detect_symbols_from_text(req.message))
+        
+        portfolio_syms = []
+        if "portfolio" in (req.message.lower()):
+            try:
+                portfolio_syms = list(load_portfolio().keys())
+            except Exception:
+                portfolio_syms = []
+        candidate_symbols.extend([s.upper() for s in portfolio_syms])
+        
+        # Deduplicate and cap
+        candidate_symbols = list(dict.fromkeys(candidate_symbols))[:10]
+
+        tool_results = []
+        tool_context = ""
+        
+        # --- PROACTIVE Tool Run (Simpler non-agentic mode) ---
+        if req.use_tools and candidate_symbols:
+            tool_results_list = []
+            # Use the imported tool functions
+            for sym in candidate_symbols:
+                try:
+                    # Use the imported tool functions
+                    price = get_current_price(sym)
+                except Exception as e:
+                    price = {"error": str(e)}
+                try:
+                    hist = get_historical_data(sym) or []
+                    # Only include a short preview for context
+                    hist_preview = hist[:10] if isinstance(hist, list) else [] 
+                except Exception as e:
+                    hist_preview = {"error": str(e)}
+                
+                tool_results_list.append({"symbol": sym, "current_price": price, "recent_history_preview": hist_preview})
+            
+            tool_context = f"PRE-FETCHED DATA FOR ANALYSIS:\n{json.dumps(tool_results_list, ensure_ascii=False)}"
+            tool_results = tool_results_list # Keep for the final prompt
+
+        # --- LLM Chat Invocation ---
+        messages: List[Dict[str, str]] = [
+            *history_messages,
+            {"role": "system", "content": "You are a helpful Financial Analyst. Your goal is to provide a concise, data-backed answer."},
+        ]
+        
+        # If tool data was pre-fetched, inject it as a context message before the user message
+        if tool_context:
+            messages.append({"role": "system", "content": tool_context})
+
+        messages.append({"role": "user", "content": req.message})
+
+        p = (req.provider or "").strip().lower()
+        
+        # Determine per-provider model override
+        model_override = None
+        if p == "deepseek":
+            model_override = req.deepseek_model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        elif p == "openai":
+            model_override = req.openai_model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        elif p in {"anthropic", "claude"}:
+            model_override = req.anthropic_model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-202410")
+        elif p in {"gemini", "google"}:
+            model_override = req.gemini_model or os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+        elif p in {"grok", "xai"}:
+            model_override = req.xai_model or os.getenv("XAI_MODEL", "grok-beta")
+
+        # Call LLM
+        # Local models ignore 'model' override
+        if p in {"local", "pytorch", "hf", "transformers"}:
+            final_text = llm.chat(messages, max_tokens=640)
+        else:
+            final_text = llm.chat(messages, max_tokens=640, model=model_override)
+        
+        return {"response": final_text}
+
+
+    except Exception as e:
+        # CRITICAL FIX: Ensure a valid JSON response even if an exception occurs
+        return {"response": f"An unhandled backend error occurred: {e}"}
 
 
 # -----------------------------
@@ -389,7 +327,7 @@ def add_stock(entry: PortfolioEntry):
     """
     Behavior:
     - If avg_sell is None -> BUY: weighted-average the buy price and increase quantity.
-    - If avg_sell is set   -> SELL: decrease quantity and add realized profit = (sell - avg_buy) * qty_sold.
+    - If avg_sell is set  -> SELL: decrease quantity and add realized profit = (sell - avg_buy) * qty_sold.
     """
     pf = load_portfolio()
     sym = entry.symbol
@@ -485,6 +423,48 @@ def open_env_in_notepad():
         return {"status": "error", "error": str(e)}
 
 
+# -----------------------------
+# Agent configuration (for Autogen)
+# -----------------------------
+class AgentConfig(BaseModel):
+    agents: list[dict]
+
+AGENTS_FILE = Path(__file__).with_name("agents_config.json")
+
+def load_agents_config():
+    try:
+        with AGENTS_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        # Default roles based on previous CrewAI purposes (now for Autogen)
+        return {
+            "agents": [
+                {"name": "Prediction Analyst", "role": "Prediction Analyst", "goal": "Predict future performance of the asset.", "backstory": "Expert in quantitative forecasting."},
+                {"name": "Short Term Market Analyst", "role": "Short Term Market Analyst", "goal": "Analyze short-term price action.", "backstory": "Expert in technical analysis."},
+                {"name": "Long Term Market Analyst", "role": "Long Term Market Analyst", "goal": "Evaluate long-term viability.", "backstory": "Fundamental analyst."},
+                {"name": "Risk Analyst", "role": "Risk Analyst", "goal": "Assess risk factors.", "backstory": "Risk modeling specialist."},
+            ]
+        }
+
+def save_agents_config(cfg: dict):
+    with AGENTS_FILE.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4)
+
+
+@app.get("/agents/config")
+def get_agents_config():
+    return load_agents_config()
+
+
+@app.post("/agents/config")
+def set_agents_config(req: AgentConfig):
+    cfg = {"agents": req.agents}
+    save_agents_config(cfg)
+    return {"status": "saved"}
+
+
 if __name__ == "__main__":
     import uvicorn
+    # If running from repo root, use 'backend.main:app'. If running from backend, use 'main:app'.
+    # Defaulting to the path Uvicorn expects when run from the root:
     uvicorn.run("backend.main:app", host="127.0.0.1", port=int(os.getenv("PORT", "8000")), reload=True)

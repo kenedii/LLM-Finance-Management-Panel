@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="LLM Stock Platform", layout="wide")
 
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Chat", "Portfolio", "Settings"])
+page = st.sidebar.radio("Go to", ["Chat", "Portfolio", "Settings", "Agents"])
 
 provider = st.sidebar.selectbox("LLM Provider", ["openai", "deepseek", "grok", "gemini", "local"])
 
@@ -112,7 +112,7 @@ if page == "Chat":
     message = st.text_area("Your message")
     symbol = st.text_input("Optional: Stock symbol for focused analysis")
     include_portfolio = st.checkbox("Let LLM see your portfolio")
-    use_crew = st.checkbox("Use Crew (multi-agent)", value=True)
+    use_autogen = st.checkbox("Use Autogen (multi-agent)", value=True)
     use_history = st.checkbox("Use chat history as context", value=False)
     use_tools = st.checkbox("Let LLM use tools (price/history)", value=False)
 
@@ -152,7 +152,7 @@ if page == "Chat":
         # Persist the user's original message (without portfolio context block)
         append_message(session_id, "user", message)
 
-        # Pass use_crew flag and history settings via utils
+    # Pass use_autogen flag and history settings via utils
         # Pull optional per-provider model overrides from session state
         openai_model = st.session_state.get("openai_model")
         deepseek_model = st.session_state.get("deepseek_model")
@@ -164,7 +164,7 @@ if page == "Chat":
             provider,
             msg,
             symbol,
-            use_crew=use_crew,
+            use_autogen=use_autogen,
             use_history=use_history,
             session_id=session_id,
             use_tools=use_tools,
@@ -300,3 +300,39 @@ elif page == "Settings":
     if st.button("Open .env in Notepad"):
         open_env_in_notepad()
         st.info(".env should open in Notepad. If it does not, ensure the backend server is running and you are on Windows.")
+
+# --- AGENTS PAGE ---
+elif page == "Agents":
+    st.title("🧩 Autogen Agents Configuration")
+    st.markdown("Define the roles, goals, and backstories for your Autogen agents.")
+    from utils import get_agents_config, set_agents_config
+    cfg = get_agents_config()
+    agents = cfg.get("agents", [])
+
+    st.markdown("Current agents:")
+    edited_agents = []
+    if not agents:
+        st.info("No agents defined. You can add some below.")
+
+    # Editable rows for each agent
+    for i, a in enumerate(agents):
+        st.subheader(f"Agent {i+1}")
+        col1, col2 = st.columns(2)
+        with col1:
+            name = st.text_input(f"Name {i+1}", value=a.get("name", ""), key=f"agent_name_{i}")
+            role = st.text_input(f"Role {i+1}", value=a.get("role", name or "Analyst"), key=f"agent_role_{i}")
+        with col2:
+            goal = st.text_input(f"Goal {i+1}", value=a.get("goal", "Provide analysis."), key=f"agent_goal_{i}")
+            backstory = st.text_area(f"Backstory {i+1}", value=a.get("backstory", ""), key=f"agent_backstory_{i}")
+        edited_agents.append({"name": name, "role": role, "goal": goal, "backstory": backstory})
+
+    st.markdown("Add or remove agents:")
+    if st.button("Add Agent"):
+        edited_agents.append({"name": "New Analyst", "role": "Analyst", "goal": "Provide analysis.", "backstory": ""})
+    if agents and st.button("Remove Last Agent"):
+        edited_agents = edited_agents[:-1]
+
+    if st.button("Save Agents Configuration"):
+        set_agents_config(edited_agents)
+        st.success("Agents configuration saved.")
+        st.rerun()

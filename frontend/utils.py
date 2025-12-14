@@ -3,16 +3,17 @@ import requests
 
 API_URL = "http://localhost:8000"
 
-def chat_with_llm(provider, message, symbol=None, use_crew=True, use_history=False, session_id=None, use_tools=False,
+def chat_with_llm(provider, message, symbol=None, use_autogen=True, use_history=False, session_id=None, use_tools=False,
                   openai_model=None, deepseek_model=None, anthropic_model=None, gemini_model=None, xai_model=None, local_model_path=None):
     r = requests.post(f"{API_URL}/chat", json={
         "provider": provider,
         "message": message,
         "symbol": symbol,
-        "use_crew": use_crew,
+        "use_crew": False if use_autogen else True,
         "use_history": use_history,
         "session_id": session_id,
         "use_tools": use_tools,
+        "use_autogen": bool(use_autogen),
         "openai_model": openai_model,
         "deepseek_model": deepseek_model,
         "anthropic_model": anthropic_model,
@@ -61,3 +62,10 @@ def add_to_portfolio(symbol, avg_buy, avg_sell, qty):
 
 def delete_from_portfolio(symbol):
     return requests.post(f"{API_URL}/portfolio/delete", params={"symbol": symbol}).json()
+
+# ---- Agents config (Autogen) ----
+def get_agents_config():
+    return requests.get(f"{API_URL}/agents/config").json()
+
+def set_agents_config(agents: list[dict]):
+    return requests.post(f"{API_URL}/agents/config", json={"agents": agents}).json()
